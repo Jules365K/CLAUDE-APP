@@ -1,0 +1,9 @@
+# personal data stays local
+data.js
+
+# reference photos are not ours to publish
+img/*.jpg
+img/*.jpeg
+img/*.png
+
+.DS_Store
