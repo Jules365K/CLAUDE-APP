@@ -2,162 +2,186 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jules Mission Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jules</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 900'%3E%3Cg fill='none' stroke='%23ff9a45' stroke-width='22' stroke-linejoin='round'%3E%3Cpath d='M100 110 C 126 140 140 210 140 300 L 60 300 C 60 210 74 140 100 110 Z'/%3E%3Cpath d='M60 300 H140 V640 H60 Z'/%3E%3Cpath d='M64 640 H136 V700 H64 Z'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<div class="intro" id="intro" aria-hidden="true">
-  <div class="intro-flash"></div>
-  <span class="intro-word">Jules</span>
-  <span class="intro-count" id="introCount"></span>
-  <button class="intro-skip" type="button">Skip</button>
-</div>
 <canvas class="warp" id="warp" aria-hidden="true"></canvas>
 <div class="grain" aria-hidden="true"></div>
-<div class="progress" id="progress"></div>
 
-<header class="topbar">
-  <a class="brand" id="brand" href="#" aria-label="Jules, back to launch"><svg viewBox="0 0 200 900" id="brandMark" aria-hidden="true"></svg><span class="brand-word">Jules</span></a>
-  <nav class="jumps" id="jumps" aria-label="Hyperjump to a section"></nav>
-  <span class="alt" id="alt">ALT 000.0 KM</span>
-</header>
-<nav class="mr" id="mr" aria-label="Rocket parts"><span class="mr-label" id="mrLabel">Exhaust</span><svg class="mini" viewBox="0 0 200 900" id="mrSvg"></svg></nav>
-
-<main>
-  <!-- 01 LAUNCH · the exhaust, what's already burned -->
-  <section class="scene photo" id="launch" style="--len:330vh">
-    <div class="pin">
-      <canvas class="gl" aria-hidden="true"></canvas>
-      <img class="fallback" alt="Rocket lift-off with smoke billowing to both sides">
-      <div class="shade"></div>
-      <div class="layer" data-show="0,.17" style="left:clamp(16px,4.5vw,64px);bottom:12vh">
-        <p class="eyebrow"><span class="num">01</span><span class="rule"></span>Mission one · launch sequence</p>
-        <h1 class="title">Jules</h1>
-        <div class="cue"><i></i>Scroll to launch</div>
-      </div>
-      <div class="layer" data-show=".2,.58" style="left:clamp(16px,6vw,96px);top:50%;transform:translateY(-50%)">
-        <p class="eyebrow"><span class="num">01</span><span class="rule"></span>The exhaust · what's already burned</p>
-        <h2 class="statement" data-words=".22,.48">Everything you've learned is thrust</h2>
-      </div>
-      <div id="callouts"></div>
-      <div class="layer" data-show=".78,.93" style="left:50%;bottom:12vh;transform:translateX(-50%)"><button class="cta open-part" data-part="exhaust" type="button">Open the flight log</button></div>
-      <div class="layer variant" data-scene="launch"></div>
+<!-- ============ THE APP: what you use every day ============ -->
+<div class="app" id="app">
+  <aside class="side" aria-label="Jules">
+    <a class="side-brand" id="sideBrand" href="#home" aria-label="Jules: home"></a>
+    <nav class="nav side-nav" id="sideNav" aria-label="Views"></nav>
+    <button type="button" class="side-search" id="sideSearch" aria-label="Search and commands"></button>
+    <a class="side-film" href="#film"><span class="sf-img" aria-hidden="true"></span><span class="sf-t"><b>Launch film</b><em>The cinematic tour · F</em></span></a>
+    <div class="side-foot">
+      <button type="button" class="side-link" id="sideSettings"></button>
+      <button type="button" class="side-link" id="sideKeys">Keyboard</button>
+      <span class="side-status" id="syncStatus" role="status">Starting…</span>
     </div>
-  </section>
-
-  <!-- 02 THE ROCKET · every part opens a page -->
-  <section class="scene" id="rocket" style="--len:260vh">
-    <div class="pin">
-      <div class="layer" data-show="0,1" style="left:clamp(16px,6vw,96px);top:18vh;max-width:38vw">
-        <p class="eyebrow"><span class="num">02</span><span class="rule"></span>The rocket · every part opens</p>
-        <h2 class="statement" data-words=".1,.26">Your rocket</h2>
-        <p class="lede">The exhaust is what you've done. The engines are today. The body carries your side projects, the command module plots the route, and the star is where it all goes. Select any part to go inside.</p>
-      </div>
-      <div class="rk-stage" id="rkStage">
-        <img class="rk-base" src="img/rocket.png" alt="A rocket in flight, cut out against darkness">
-      </div>
-      <div class="lb top"></div><div class="lb bot"></div>
-      <div class="chapter"><span class="n">CHAPTER 02</span><span class="t">The rocket</span></div>
-    </div>
-  </section>
-
-  <!-- 03 ENGINES · today -->
-  <section class="scene photo" id="engines" style="--len:340vh">
-    <div class="pin">
-      <canvas class="gl" aria-hidden="true"></canvas>
-      <img class="fallback" alt="Rocket engines firing">
-      <div class="shade"></div>
-      <div class="layer" data-show=".1,.94" style="left:clamp(16px,6vw,96px);top:16vh">
-        <p class="eyebrow"><span class="num">03</span><span class="rule"></span>The engines · <span id="today">today</span></p>
-        <h2 class="statement" data-words=".12,.3">Today's burns</h2>
-        <div class="meta" id="engMeta"></div>
-        <div style="margin-top:12px"><button class="cta open-part" data-part="engines" type="button">Open today</button></div>
-      </div>
-      <div class="layer cluster" id="cluster" data-show=".3,.94"></div>
-      <div class="layer tasklist" id="tasklist" data-show=".3,.94"></div>
-      <div class="layer variant" data-scene="engines"></div>
-      <div class="lb top"></div><div class="lb bot"></div>
-      <div class="chapter"><span class="n">CHAPTER 03</span><span class="t">The engines</span></div>
-    </div>
-  </section>
-
-  <!-- 04 BODY · side projects -->
-  <section class="scene photo" id="body" style="--len:330vh">
-    <div class="pin">
-      <canvas class="gl" aria-hidden="true"></canvas>
-      <img class="fallback" alt="Close-up of stainless steel rocket structure">
-      <div class="shade"></div>
-      <div class="layer" data-show=".1,.95" style="left:clamp(16px,6vw,96px);top:16vh">
-        <p class="eyebrow"><span class="num">04</span><span class="rule"></span>The body · built alongside</p>
-        <h2 class="statement" data-words=".12,.28">Side projects</h2>
-        <div style="margin-top:12px"><button class="cta open-part" data-part="body" type="button">Open side projects</button></div>
-      </div>
-      <div class="layer projects" id="projects" style="left:clamp(16px,6vw,96px);bottom:11vh"></div>
-      <div class="layer variant" data-scene="body"></div>
-      <div class="lb top"></div><div class="lb bot"></div>
-      <div class="chapter"><span class="n">CHAPTER 04</span><span class="t">Side projects</span></div>
-    </div>
-  </section>
-
-  <!-- 05 COMMAND MODULE · flight path board -->
-  <section class="scene" id="command" style="--len:640vh">
-    <div class="pin">
-      <div class="board" id="board" aria-label="Flight path from 2026 to 2030, one row per year"></div>
-      <div class="layer bd-hud" data-show=".08,.88"><span class="yr tc" id="bdYear">2026</span><span class="lb2" id="bdLabel">Row 1</span></div>
-      <div class="layer bd-legend" data-show=".9,1"><b>Filled</b> is flown, <b>outlined</b> is planned, and the orange line is today. <span id="bdNote"></span> <button class="cta open-part" data-part="command" type="button">Open the overview</button></div>
-      <div class="lb top"></div><div class="lb bot"></div>
-      <div class="chapter"><span class="n">CHAPTER 05</span><span class="t">Flight path</span></div>
-    </div>
-  </section>
-
-  <!-- 06 THE STAR · the future -->
-  <section class="scene photo" id="star" style="--len:380vh">
-    <div class="pin">
-      <canvas class="gl" aria-hidden="true"></canvas>
-      <img class="fallback" alt="Painting of a rocket's stages separating in dark space">
-      <div class="shade"></div>
-      <div class="layer" data-show=".08,.4" style="left:clamp(16px,6vw,96px);top:16vh">
-        <p class="eyebrow"><span class="num">06</span><span class="rule"></span>The star · where it all goes</p>
-        <h2 class="statement" data-words=".1,.26">Aim at the star</h2>
-      </div>
-      <svg class="constellation" aria-hidden="true"><path id="route" d=""/></svg>
-      <div id="nodes"></div>
-      <div class="layer outro" data-show=".86,1">
-        <p class="big">Mission control is next</p>
-        <p class="small">Look test v0.4 · private · the reference images stay off the public repo</p>
-        <div class="row">
-          <button class="cta open-part" data-part="star" type="button">Open the target</button>
-          <button class="cta" id="restart" type="button">Back to launch</button>
-        </div>
-      </div>
-      <div class="layer variant" data-scene="star"></div>
-      <div class="lb top"></div><div class="lb bot"></div>
-      <div class="chapter"><span class="n">CHAPTER 06</span><span class="t">The star</span></div>
-    </div>
-  </section>
-</main>
-
-<div class="page" id="page" role="dialog" aria-modal="true" aria-labelledby="pageTitle" data-lenis-prevent hidden>
-  <div class="page-inner">
-    <header class="page-head">
-      <svg class="mini" viewBox="0 0 200 900" id="pageRocket" aria-label="Switch part"></svg>
-      <div>
-        <p class="eyebrow" id="pageEyebrow"></p>
-        <h2 class="page-title" id="pageTitle"></h2>
-        <p class="page-lede" id="pageLede"></p>
-      </div>
-      <button class="cta" id="pageClose" type="button">Close</button>
-    </header>
-    <div id="pageBody"></div>
-  </div>
+  </aside>
+  <main class="main"><div class="view" id="view"></div></main>
+  <nav class="nav tabbar" id="tabbar" aria-label="Views"></nav>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js"></script>
+<!-- ============ THE FILM: the cinematic scroll, opened from the app ============ -->
+<div class="film" id="film" hidden>
+  <div class="progress" id="progress"></div>
+  <header class="topbar">
+    <a class="brand" id="filmBrand" href="#home" aria-label="Back to mission control"><svg viewBox="0 0 200 900" id="brandMark" aria-hidden="true"></svg><span class="brand-word">Jules</span></a>
+    <nav class="jumps" id="jumps" aria-label="Hyperjump to a section"></nav>
+    <span class="alt" id="alt">ALT 000.0 KM</span>
+    <button type="button" class="cta film-exit" id="filmExit">Mission control</button>
+  </header>
+  <nav class="mr" id="mr" aria-label="Rocket parts"><span class="mr-label" id="mrLabel">Exhaust</span><svg class="mini" viewBox="0 0 200 900" id="mrSvg"></svg></nav>
+
+  <main>
+    <!-- 01 LAUNCH · the exhaust, what's already burned -->
+    <section class="scene photo" id="launch" style="--len:330vh">
+      <div class="pin">
+        <canvas class="gl" aria-hidden="true"></canvas>
+        <img class="fallback" alt="Rocket lift-off with smoke billowing to both sides">
+        <div class="shade"></div>
+        <div class="layer" data-show="0,.17" style="left:clamp(16px,4.5vw,64px);bottom:12vh">
+          <p class="eyebrow"><span class="num">01</span><span class="rule"></span>Mission one · launch sequence</p>
+          <h1 class="title">Jules</h1>
+          <div class="cue"><i></i>Scroll to launch</div>
+        </div>
+        <div class="layer" data-show=".2,.58" style="left:clamp(16px,6vw,96px);top:50%;transform:translateY(-50%)">
+          <p class="eyebrow"><span class="num">01</span><span class="rule"></span>The exhaust · what's already burned</p>
+          <h2 class="statement" data-words=".22,.48">Everything you've learned is thrust</h2>
+        </div>
+        <div id="callouts"></div>
+        <div class="layer" data-show=".78,.93" style="left:50%;bottom:12vh;transform:translateX(-50%)"><button class="cta open-part" data-part="exhaust" type="button">Open the flight log</button></div>
+        <div class="layer variant" data-scene="launch"></div>
+      </div>
+    </section>
+
+    <!-- 02 THE ROCKET · every part opens a view -->
+    <section class="scene" id="rocket" style="--len:260vh">
+      <div class="pin">
+        <div class="layer" data-show="0,1" style="left:clamp(16px,6vw,96px);top:18vh;max-width:38vw">
+          <p class="eyebrow"><span class="num">02</span><span class="rule"></span>The rocket · every part opens</p>
+          <h2 class="statement" data-words=".1,.26">Your rocket</h2>
+          <p class="lede">The exhaust is what you've done. The engines are today. The body carries your side projects, the command module plots the route, and the star is where it all goes. Select any part to go straight there in mission control.</p>
+        </div>
+        <div class="rk-stage" id="rkStage">
+          <img class="rk-base" src="img/rocket.png" alt="A rocket in flight, cut out against darkness">
+        </div>
+        <div class="lb top"></div><div class="lb bot"></div>
+        <div class="chapter"><span class="n">CHAPTER 02</span><span class="t">The rocket</span></div>
+      </div>
+    </section>
+
+    <!-- 03 ENGINES · today -->
+    <section class="scene photo" id="engines" style="--len:340vh">
+      <div class="pin">
+        <canvas class="gl" aria-hidden="true"></canvas>
+        <img class="fallback" alt="Rocket engines firing">
+        <div class="shade"></div>
+        <div class="layer" data-show=".1,.94" style="left:clamp(16px,6vw,96px);top:16vh">
+          <p class="eyebrow"><span class="num">03</span><span class="rule"></span>The engines · <span id="today">today</span></p>
+          <h2 class="statement" data-words=".12,.3">Today's burns</h2>
+          <div class="meta" id="engMeta"></div>
+          <div style="margin-top:12px"><button class="cta open-part" data-part="engines" type="button">Open today</button></div>
+        </div>
+        <div class="layer cluster" id="cluster" data-show=".3,.94"></div>
+        <div class="layer tasklist" id="tasklist" data-show=".3,.94"></div>
+        <div class="layer variant" data-scene="engines"></div>
+        <div class="lb top"></div><div class="lb bot"></div>
+        <div class="chapter"><span class="n">CHAPTER 03</span><span class="t">The engines</span></div>
+      </div>
+    </section>
+
+    <!-- 04 BODY · side projects -->
+    <section class="scene photo" id="body" style="--len:330vh">
+      <div class="pin">
+        <canvas class="gl" aria-hidden="true"></canvas>
+        <img class="fallback" alt="Close-up of stainless steel rocket structure">
+        <div class="shade"></div>
+        <div class="layer" data-show=".1,.95" style="left:clamp(16px,6vw,96px);top:16vh">
+          <p class="eyebrow"><span class="num">04</span><span class="rule"></span>The body · built alongside</p>
+          <h2 class="statement" data-words=".12,.28">Side projects</h2>
+          <div style="margin-top:12px"><button class="cta open-part" data-part="body" type="button">Open projects</button></div>
+        </div>
+        <div class="layer projects" id="projects" style="left:clamp(16px,6vw,96px);bottom:11vh"></div>
+        <div class="layer variant" data-scene="body"></div>
+        <div class="lb top"></div><div class="lb bot"></div>
+        <div class="chapter"><span class="n">CHAPTER 04</span><span class="t">Side projects</span></div>
+      </div>
+    </section>
+
+    <!-- 05 COMMAND MODULE · the whole route on one line -->
+    <section class="scene" id="command" style="--len:300vh">
+      <div class="pin">
+        <div class="layer" data-show=".04,.96" style="left:clamp(16px,6vw,96px);top:15vh">
+          <p class="eyebrow"><span class="num">05</span><span class="rule"></span>The command module · flight path</p>
+          <h2 class="statement" data-words=".06,.2">The route</h2>
+        </div>
+        <div class="layer fp-strip" id="fpStrip" data-show=".14,.96"></div>
+        <div class="layer fp-counts" id="fpCounts" data-show=".42,.96"></div>
+        <div class="layer" data-show=".66,.96" style="right:clamp(16px,6vw,96px);bottom:12vh"><button class="cta open-part" data-part="command" type="button">Open the flight path</button></div>
+        <div class="lb top"></div><div class="lb bot"></div>
+        <div class="chapter"><span class="n">CHAPTER 05</span><span class="t">Flight path</span></div>
+      </div>
+    </section>
+
+    <!-- 06 THE STAR · the future -->
+    <section class="scene photo" id="star" style="--len:380vh">
+      <div class="pin">
+        <canvas class="gl" aria-hidden="true"></canvas>
+        <img class="fallback" alt="Painting of a rocket's stages separating in dark space">
+        <div class="shade"></div>
+        <div class="layer" data-show=".08,.4" style="left:clamp(16px,6vw,96px);top:16vh">
+          <p class="eyebrow"><span class="num">06</span><span class="rule"></span>The star · where it all goes</p>
+          <h2 class="statement" data-words=".1,.26">Aim at the star</h2>
+        </div>
+        <svg class="constellation" aria-hidden="true"><path id="route" d=""/></svg>
+        <div id="nodes"></div>
+        <div class="layer outro" data-show=".86,1">
+          <p class="big">Back to work</p>
+          <p class="small">Jules v0.5 · private · the reference images stay off the public repo</p>
+          <div class="row">
+            <button class="cta open-part" data-part="star" type="button">Open the target</button>
+            <button class="cta" id="restart" type="button">Back to launch</button>
+          </div>
+        </div>
+        <div class="layer variant" data-scene="star"></div>
+        <div class="lb top"></div><div class="lb bot"></div>
+        <div class="chapter"><span class="n">CHAPTER 06</span><span class="t">The star</span></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============ OVERLAYS ============ -->
+<div class="drawer" id="drawer" hidden></div>
+<div class="drawer form" id="form" hidden></div>
+<div class="palette" id="palette" hidden>
+  <div class="pal-scrim"></div>
+  <div class="pal-box" role="dialog" aria-modal="true" aria-label="Search and commands">
+    <input id="palIn" type="text" autocomplete="off" spellcheck="false" placeholder="Search, jump, or type a new task…" role="combobox" aria-expanded="true" aria-controls="palList" aria-autocomplete="list">
+    <ul id="palList" role="listbox"></ul>
+    <p class="pal-foot"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> choose · <kbd>Esc</kbd> close</p>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
 <script src="data.js"></script>
 <script src="data.example.js"></script>
+<script src="js/util.js"></script>
+<script src="js/parse.js"></script>
+<script src="js/seed.js"></script>
+<script src="js/store.js"></script>
+<script src="js/gcal.js"></script>
+<script src="js/ui.js"></script>
 <script src="js/app.js"></script>
+<script src="js/film.js"></script>
 </body>
 </html>

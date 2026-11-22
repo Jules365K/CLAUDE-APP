@@ -1,662 +1,1384 @@
-/* JULES · mission control
-   Read top to bottom: data and helpers, the rocket outline, chrome (intro, smooth scroll,
-   hyperjump), each scene's builder, the WebGL photo renderer, part pages, then the frame loop
-   that moves everything as you scroll. */
-(() => {
+/* JULES · app.js
+   The app you use every day. Read it in this order:
+     1. state and small helpers
+     2. actions (everything that changes a task goes through here)
+     3. shared pieces: task rows, quick add, notes, the day timeline
+     4. one function per view: Home, Tasks, Calendar, Projects, Flight path, Log
+     5. the task editor, settings, command palette, keyboard
+     6. the router, which shows a view (or the film) for the address after the #  */
+(function () {
   "use strict";
-  const D = window.ASCENT_DATA;
-  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
-  const sm = t => { t = clamp(t); return t * t * (3 - 2 * t); };
-  const lerp = (a, b, t) => a + (b - a) * t;
-  const ramp = (p, a, b) => sm((p - a) / (b - a));
-  const $ = (s, r = document) => r.querySelector(s);
-  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-  const NS = "http://www.w3.org/2000/svg";
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const pad2 = n => String(n).padStart(2, "0");
-  const store = {
-    get(k, f) { try { const v = JSON.parse(localStorage.getItem(k)); return v == null ? f : v; } catch (e) { return f; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-  };
-  const TODAY = new Date();
+  const J = window.J, { $, $$, esc } = J, S = J.store, G = J.gcal;
 
-  /* ================= rocket parts ================= */
-  const PARTS = {
-    star:    { label: "The star",       sub: "The future",  scene: "star",    title: "The target",  lede: "The skills you're flying toward, how far out each one is, and what opens up when you get there." },
-    command: { label: "Command module", sub: "Flight path", scene: "command", title: "Overview",    lede: "Countdowns, your first year at UNSW term by term, and the rest of the degree." },
-    body:    { label: "Body",           sub: "Side projects", scene: "body",  title: "Side projects", lede: "Everything you're building on the side. Fuel level is progress; the list is the next moves in order." },
-    engines: { label: "Engines",        sub: "Today",       scene: "engines", title: "Today",       lede: "Today's burns. Tick them off to light the engines, or add a new one." },
-    exhaust: { label: "Exhaust",        sub: "Flight log",  scene: "launch",  title: "Flight log",  lede: "Everything already burned. This doubles as the source for your CV." }
-  };
-  const ORDER = ["star", "command", "body", "engines", "exhaust"];
-  const ROCKET = {
-    star:    ["M100 22 L105 41 L124 46 L105 51 L100 70 L95 51 L76 46 L95 41 Z"],
-    command: ["M100 110 C 126 140 140 210 140 300 L 60 300 C 60 210 74 140 100 110 Z", "M84 236 H116"],
-    body:    ["M60 300 H140 V640 H60 Z", "M60 470 H140", "M60 560 L34 652 L60 640", "M140 560 L166 652 L140 640"],
-    engines: ["M64 640 H136 V666 H64 Z", "M72 666 H88 L92 704 H68 Z", "M92 666 H108 L112 704 H88 Z", "M112 666 H128 L132 704 H108 Z"],
-    exhaust: ["M76 712 C 66 770 58 830 100 892 C 142 830 134 770 124 712 Z"]
-  };
-  const HIT = { star: [70, 16, 60, 60], command: [56, 104, 88, 196], body: [30, 300, 140, 340], engines: [60, 640, 80, 68], exhaust: [54, 708, 92, 190] };
-  const rocketMarkup = (interactive = true) => ORDER.map(k =>
-    `<g class="rp" data-part="${k}"${interactive ? ` role="button" tabindex="0" aria-label="${PARTS[k].label}: ${PARTS[k].sub}"` : ""}>` +
-    `<rect class="hit" x="${HIT[k][0]}" y="${HIT[k][1]}" width="${HIT[k][2]}" height="${HIT[k][3]}"/>` +
-    ROCKET[k].map(d => `<path d="${d}"/>`).join("") + `</g>`).join("");
-  function bindParts(root, onPick, onHover) {
-    $$("[data-part]", root).forEach(g => {
-      g.addEventListener("click", e => { e.preventDefault(); onPick(g.dataset.part, e); });
-      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(g.dataset.part, e); } });
-      if (onHover) { g.addEventListener("mouseenter", () => onHover(g.dataset.part)); g.addEventListener("mouseleave", () => onHover(null)); g.addEventListener("focus", () => onHover(g.dataset.part)); g.addEventListener("blur", () => onHover(null)); }
-    });
-  }
+  /* ======================================================================
+     1. STATE AND HELPERS
+     ====================================================================== */
+  const lsGet = (k, f) => { try { const v = JSON.parse(localStorage.getItem("jules5:ui:" + k)); return v == null ? f : v; } catch (e) { return f; } };
+  const lsSet = (k, v) => { try { localStorage.setItem("jules5:ui:" + k, JSON.stringify(v)); } catch (e) {} };
 
-  /* ================= smooth scroll (Lenis) ================= */
-  let lenis = null;
-  if (!reduced && window.Lenis) {
-    lenis = new window.Lenis({ lerp: .085, wheelMultiplier: .9, smoothWheel: true });
-    const raf = t => { lenis.raf(t); requestAnimationFrame(raf); };
-    requestAnimationFrame(raf);
-  }
-
-  /* ================= navigation: hyperjump ================= */
-  const JUMP_AT = { launch: 0, rocket: .86, engines: .45, body: .62, command: .1, star: .8 };
-  const targetY = id => { const s = document.getElementById(id); return s ? s.offsetTop + (s.offsetHeight - innerHeight) * (JUMP_AT[id] || 0) : 0; };
-  let snap = false;
-  function jumpNow(id) {
-    const y = targetY(id);
-    if (lenis) lenis.scrollTo(y, { immediate: true, force: true }); else window.scrollTo(0, y);
-    snap = true;
-  }
-  const warp = $("#warp"), wctx = warp.getContext("2d");
-  let warping = false;
-  function hyperjump(id) {
-    if (warping) return;
-    if (reduced) { jumpNow(id); return; }
-    warping = true;
-    const dpr = Math.min(2, devicePixelRatio || 1), W = innerWidth, H = innerHeight;
-    warp.width = W * dpr; warp.height = H * dpr; warp.classList.add("on");
-    const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2;
-    const stars = Array.from({ length: 260 }, () => ({ a: Math.random() * Math.PI * 2, r: Math.random() * .9 + .05, w: Math.random() * 1.2 + .3, c: Math.random() < .2 ? "255,200,150" : "235,240,255" }));
-    const t0 = performance.now(), dur = 1000;
-    let jumped = false;
-    const step = now => {
-      const t = clamp((now - t0) / dur);
-      const into = sm(t / .45), out = 1 - sm((t - .45) / .55);
-      const k = t < .45 ? into : out;
-      wctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      wctx.clearRect(0, 0, W, H);
-      wctx.fillStyle = `rgba(0,0,0,${(.92 * k).toFixed(3)})`; wctx.fillRect(0, 0, W, H);
-      stars.forEach(s => {
-        const r1 = s.r * R * (1 + k * .35), len = R * .55 * k * k * (s.r + .2);
-        const x1 = cx + Math.cos(s.a) * r1, y1 = cy + Math.sin(s.a) * r1;
-        const x2 = cx + Math.cos(s.a) * (r1 + len), y2 = cy + Math.sin(s.a) * (r1 + len);
-        wctx.strokeStyle = `rgba(${s.c},${(.85 * k).toFixed(3)})`; wctx.lineWidth = s.w;
-        wctx.beginPath(); wctx.moveTo(x1, y1); wctx.lineTo(x2, y2); wctx.stroke();
-      });
-      if (t >= .45 && !jumped) { jumped = true; jumpNow(id); }
-      if (t < 1) requestAnimationFrame(step); else { warp.classList.remove("on"); warping = false; }
-    };
-    requestAnimationFrame(step);
-  }
-  const JUMPS = [["launch", "Launch"], ["rocket", "Rocket"], ["engines", "Today"], ["body", "Projects"], ["command", "Flight path"], ["star", "Star"]];
-  $("#jumps").innerHTML = JUMPS.map(([id, l]) => `<button type="button" data-jump="${id}">${l}</button>`).join("");
-  $$("#jumps button").forEach(b => b.addEventListener("click", () => hyperjump(b.dataset.jump)));
-  $("#brand").addEventListener("click", e => { e.preventDefault(); hyperjump("launch"); });
-
-  /* logo, side rocket, page rocket */
-  $("#brandMark").innerHTML = rocketMarkup(false);
-  const mrSvg = $("#mrSvg"), mr = $("#mr"), mrLabel = $("#mrLabel");
-  mrSvg.innerHTML = rocketMarkup();
-  let mrActive = "exhaust";
-  bindParts(mrSvg, part => hyperjump(PARTS[part].scene), part => {
-    mrLabel.textContent = part ? `${PARTS[part].label} · ${PARTS[part].sub}` : (mrActive ? PARTS[mrActive].label : "The rocket");
-    mr.classList.toggle("show", !!part);
-  });
-
-  /* ================= ignition intro ================= */
-  (function intro() {
-    const el = $("#intro");
-    let seen = false;
-    try { seen = sessionStorage.getItem("jules-intro") === "1"; } catch (e) {}
-    if (reduced || seen || location.hash) { el.remove(); return; }
-    try { sessionStorage.setItem("jules-intro", "1"); } catch (e) {}
-    if (lenis) lenis.stop();
-    const count = $("#introCount"), timers = [];
-    const at = (ms, fn) => timers.push(setTimeout(fn, ms));
-    const finish = () => {
-      timers.forEach(clearTimeout);
-      el.classList.add("out");
-      if (lenis) lenis.start();
-      setTimeout(() => el.remove(), 950);
-      ["click", "keydown", "wheel", "touchstart"].forEach(ev => removeEventListener(ev, finish));
-    };
-    at(80, () => el.classList.add("go"));
-    at(900, () => count.textContent = "T – 3");
-    at(1300, () => count.textContent = "T – 2");
-    at(1700, () => count.textContent = "T – 1");
-    at(2100, () => { count.textContent = "IGNITION"; el.classList.add("ignite"); });
-    at(2550, finish);
-    ["click", "keydown", "wheel", "touchstart"].forEach(ev => addEventListener(ev, finish, { passive: true }));
-  })();
-
-  /* ================= countdowns ================= */
-  const daysTo = ([y, m, d]) => {
-    const a = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate());
-    return Math.max(0, Math.round((new Date(y, m, d) - a) / 864e5));
-  };
-  $("#engMeta").innerHTML = `<span>${esc(D.dates.departureLabel)} <b>T–${daysTo(D.dates.departure)}</b> days</span><span>Term 1 <b>T–${daysTo(D.dates.term1)}</b> days</span>`;
-  $("#today").textContent = TODAY.toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
-
-  /* ================= burns (today's tasks) ================= */
-  let tasks = store.get("ascent-tasks", null);
-  if (!Array.isArray(tasks) || !tasks.length) tasks = D.tasks.map(t => ({ ...t, done: false }));
-  const saveTasks = () => store.set("ascent-tasks", tasks);
-  let glowTarget = 0;
-  const cluster = $("#cluster"), tasklist = $("#tasklist");
-  const burnButton = (tk, i) =>
-    `<button type="button" class="burn" data-i="${i}" aria-pressed="${tk.done}"><span class="ring" aria-hidden="true"></span>` +
-    `<span class="time">${esc(tk.t)}</span><span class="what"><b>${esc(tk.what)}</b><em>${esc(tk.proj)}</em></span><span class="dur">${tk.h} h</span></button>`;
-  function renderCluster() {
-    const W = cluster.clientWidth || 700, H = cluster.clientHeight || 440;
-    const cx = W / 2, cy = H / 2, n = tasks.length;
-    const R = Math.min(W, H) * (n > 4 ? .27 : .23), Dm = Math.min(R * (n > 4 ? .68 : .86), 98);
-    const skirt = 2 * R + Dm + 34, lit = tasks.filter(t => t.done).length;
-    let lines = "", parts = "";
-    tasks.forEach((tk, i) => {
-      const ang = (-135 + i * 360 / n) * Math.PI / 180, ca = Math.cos(ang), sa = Math.sin(ang);
-      const ex = cx + ca * R, ey = cy + sa * R;
-      const left = ca < -0.01 || (Math.abs(ca) <= .01 && i % 2);
-      const lx = cx + (left ? -1 : 1) * (skirt / 2 + 30), ly = cy + sa * (R + Dm * .2);
-      lines += `<line x1="${(ex + ca * (Dm / 2 + 4)).toFixed(1)}" y1="${(ey + sa * (Dm / 2 + 4)).toFixed(1)}" x2="${(lx + (left ? 8 : -8)).toFixed(1)}" y2="${ly.toFixed(1)}"/>`;
-      parts += `<button type="button" class="eng" data-i="${i}" aria-pressed="${tk.done}" aria-label="${esc(tk.what)} at ${esc(tk.t)}" style="left:${ex}px;top:${ey}px;width:${Dm}px;height:${Dm}px"></button>` +
-        `<button type="button" class="eng-label ${left ? "left" : "right"}" data-i="${i}" data-lit="${tk.done}" style="left:${lx}px;top:${ly}px" tabindex="-1" aria-hidden="true">` +
-        `<span class="tm">${esc(tk.t)} · ${tk.h} h</span><b>${esc(tk.what)}</b><em>${esc(tk.proj)}</em></button>`;
-    });
-    cluster.innerHTML = `<svg class="cl-lines" viewBox="0 0 ${W} ${H}">${lines}</svg>` +
-      `<div class="cl-skirt" style="left:${cx}px;top:${cy}px;width:${skirt}px;height:${skirt}px"></div>${parts}` +
-      `<div class="cl-hub" style="left:${cx}px;top:${cy}px"><b>${lit}/${n}</b><span>lit</span></div>`;
-    tasklist.innerHTML = tasks.map(burnButton).join("");
-    glowTarget = n ? lit / n : 0;
-  }
-  function toggleTask(i) { if (!tasks[i]) return; tasks[i].done = !tasks[i].done; saveTasks(); renderCluster(); if (openPart === "engines") renderPage("engines"); }
-  [cluster, tasklist].forEach(el => el.addEventListener("click", e => { const b = e.target.closest("[data-i]"); if (b) toggleTask(+b.dataset.i); }));
-  renderCluster();
-
-  /* ================= side projects ================= */
-  $("#projects").innerHTML = D.projects.map((pr, i) =>
-    `<div class="prj" data-show="${(.3 + i * .1).toFixed(2)},.95" data-fill="1"><span class="prj-name">${esc(pr.n)}</span>` +
-    `<span class="prj-pct">${pad2(Math.round(pr.p * 100))}%</span><span class="prj-bar"><i style="--p:${pr.p * 100}%"></i></span>` +
-    `<span class="prj-next"><span>NEXT</span>${esc(pr.steps[0] || "")}</span></div>`).join("");
-
-  /* ================= launch callouts ================= */
-  const SPOTS = [[6, 30], [9, 58], [60, 26], [57, 56]];
-  $("#callouts").innerHTML = D.highlights.slice(0, 4).map(([t, sub], i) =>
-    `<div class="layer callout" data-show="${(.6 + i * .05).toFixed(2)},.93" style="left:${SPOTS[i][0]}%;top:${SPOTS[i][1]}%">` +
-    `<span class="mark"></span><span class="lead"></span><span><b>${esc(t)}</b><em>${esc(sub)}</em></span></div>`).join("");
-
-  /* ================= the star: route of future skills ================= */
-  $("#nodes").innerHTML = D.future.map((f, i) =>
-    `<div class="layer node${i === D.future.length - 1 ? " goal" : ""}" style="left:${f.x}%;top:${f.y}%" data-show="${(.3 + i * .11).toFixed(2)},1">` +
-    `<span class="ring2"></span><span><b>${esc(f.n)}</b><em>${esc(f.m)}</em><span class="eta">${esc(f.eta)}</span></span></div>`).join("");
-  const route = $("#route"), routeSvg = $(".constellation");
-  let routeLen = 1;
-  function layoutRoute() {
-    const pin = routeSvg.parentElement, w = pin.clientWidth, h = pin.clientHeight;
-    routeSvg.setAttribute("viewBox", `0 0 ${w} ${h}`);
-    route.setAttribute("d", D.future.map((f, i) => `${i ? "L" : "M"}${(f.x / 100 * w).toFixed(1)} ${(f.y / 100 * h).toFixed(1)}`).join(" "));
-    routeLen = route.getTotalLength() || 1;
-    route.style.strokeDasharray = `${routeLen}`;
-  }
-  const starGoal = D.future[D.future.length - 1];
-
-  /* ================= the rocket: cut-out, lit part by part ================= */
-  const RK = { command: [0, 29.5, 14], body: [29.5, 63.5, 46], engines: [63.5, 68.5, 66], exhaust: [68.5, 100, 84] };
-  const rkStage = $("#rkStage");
-  rkStage.insertAdjacentHTML("beforeend",
-    Object.entries(RK).map(([k, [a, b]]) => `<img class="rk-lit" data-part="${k}" src="img/rocket.png" alt="" style="clip-path:inset(${a}% -40% ${100 - b}% -40%)">`).join("") +
-    `<div class="rk-spot" id="rkSpot"></div>` +
-    Object.entries(RK).map(([k, [a, b]]) => `<button type="button" class="rk-hit" data-part="${k}" aria-label="Open ${PARTS[k].label}: ${PARTS[k].sub}" style="top:${a}%;height:${b - a}%"></button>`).join("") +
-    `<button type="button" class="rk-star" data-part="star" aria-label="Open the star: the future"><i></i></button>` +
-    ["star", "command", "body", "engines", "exhaust"].map((k, i) =>
-      `<button type="button" class="rk-label" data-part="${k}" tabindex="-1" aria-hidden="true" style="top:${k === "star" ? -11 : RK[k][2]}%">` +
-      `<span class="n">${pad2(5 - i)}</span><b>${PARTS[k].label}</b><em>${PARTS[k].sub}</em></button>`).join(""));
-  let rkHover = null;
-  const rkSeq = [["exhaust", .08, .24], ["engines", .24, .38], ["body", .38, .52], ["command", .52, .66], ["star", .66, .8]];
-  $$("[data-part]", rkStage).forEach(el => {
-    el.addEventListener("mouseenter", () => { rkHover = el.dataset.part; });
-    el.addEventListener("mouseleave", () => { rkHover = null; });
-    el.addEventListener("focus", () => { rkHover = el.dataset.part; });
-    el.addEventListener("blur", () => { rkHover = null; });
-    el.addEventListener("click", e => openPage(el.dataset.part, e));
-  });
-  let rkShown = "";
-  function updateRocket(p) {
-    const seq = rkSeq.find(([, a, b]) => p >= a && p < b);
-    const finale = p >= .8;
-    const part = rkHover || (seq ? seq[0] : null);
-    const key = `${part}|${finale}`;
-    if (key === rkShown) return;
-    rkShown = key;
-    $$(".rk-lit", rkStage).forEach(im => { im.classList.toggle("on", im.dataset.part === part); im.classList.toggle("soft", finale && !part); });
-    $$(".rk-label", rkStage).forEach(l => l.classList.toggle("on", l.dataset.part === part || (finale && !part)));
-    $(".rk-star", rkStage).classList.toggle("on", part === "star" || (finale && !part));
-    const spot = $("#rkSpot");
-    if (part && RK[part]) { spot.style.top = RK[part][2] + "%"; spot.style.opacity = 1; }
-    else if (part === "star") { spot.style.top = "-11%"; spot.style.opacity = .6; }
-    else spot.style.opacity = 0;
-  }
-
-  /* ================= flight path: the board ================= */
-  const board = $("#board");
-  const BD = { LEFT: 250, MW: 175, RH: 290, TOP: 40 };
-  BD.W = BD.LEFT + 12 * BD.MW + 300;
-  BD.H = BD.TOP + D.board.rows.length * BD.RH;
-  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const parseDate = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
-  const xOf = dt => BD.LEFT + (dt.getMonth() + (dt.getDate() - 1) / new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate()) * BD.MW;
-  function buildBoard() {
-    board.style.width = BD.W + "px"; board.style.height = BD.H + "px";
-    board.innerHTML = D.board.rows.map((row, r) => {
-      let h = `<div class="bd-row" style="top:${BD.TOP + r * BD.RH}px;width:${BD.W}px;height:${BD.RH}px">`;
-      h += `<div class="bd-year">${row.yr}</div>`;
-      if (row.notes) h += `<div class="bd-notes">${row.notes.map(([y, t]) => `<span><i>${esc(y)}</i>${esc(t)}</span>`).join("")}</div>`;
-      h += MONTHS.map((m, i) => `<span class="bd-month" style="left:${BD.LEFT + i * BD.MW}px">${m}</span>`).join("");
-      h += `<div class="bd-axis" style="left:${BD.LEFT}px;width:${12 * BD.MW}px;top:${BD.RH - 24}px"></div>`;
-      h += row.bars.map(b => {
-        const a = parseDate(b.from), z = parseDate(b.to), x = xOf(a), w = Math.max(xOf(z) - x, 28);
-        return `<div class="bd-bar${z < TODAY ? " past" : ""}" style="left:${x}px;top:34px;width:${w}px"><b>${esc(b.t)}</b>` +
-          (b.c ? `<span class="cs">${b.c.map(c => `<span>${esc(c)}</span>`).join("")}</span>` : "") + (b.s ? `<span class="s">${esc(b.s)}</span>` : "") + `</div>`;
-      }).join("");
-      const lanes = [-1e9, -1e9];
-      h += (row.marks || []).slice().sort((a, b) => parseDate(a.at) - parseDate(b.at)).map(m => {
-        const dt = parseDate(m.at), x = xOf(dt);
-        const lane = x - lanes[0] > 200 ? 0 : 1; lanes[lane] = x;
-        const cls = m.goal ? "goal" : dt < TODAY ? "past" : "";
-        return `<div class="bd-mark ${cls}" style="left:${x}px;top:34px;--h:${lane ? 178 : 128}px"><div class="lbl"><b>${esc(m.t)}</b>${m.s ? `<em>${esc(m.s)}</em>` : ""}</div></div>`;
-      }).join("");
-      if (row.yr === TODAY.getFullYear()) {
-        h += `<div class="bd-now" style="left:${xOf(TODAY)}px;top:14px;height:${BD.RH - 30}px"><span>NOW · ${TODAY.getDate()} ${MONTHS[TODAY.getMonth()].toUpperCase()}</span></div>`;
-      }
-      return h + `</div>`;
-    }).join("");
-  }
-  buildBoard();
-  $("#bdNote").textContent = D.board.note || "";
-  let boardKeys = [];
-  function layoutBoard() {
-    const vw = innerWidth, vh = innerHeight, n = D.board.rows.length;
-    const s = clamp(vh * .6 / BD.RH, .8, 1.75), half = vw / (2 * s);
-    const L = Math.min(half, BD.W / 2), R = Math.max(BD.W - half, BD.W / 2);
-    const cyOf = r => BD.TOP + r * BD.RH + BD.RH / 2 - 8;
-    const fit = Math.min(vw * .9 / BD.W, vh * .78 / BD.H);
-    const a = .1, b = .84, seg = (b - a) / n;
-    boardKeys = [];
-    for (let r = 0; r < n; r++) {
-      boardKeys.push({ p: a + r * seg, cx: L, cy: cyOf(r), s, row: r });
-      boardKeys.push({ p: a + r * seg + seg * .76, cx: R, cy: cyOf(r), s, row: r });
-      if (r < n - 1) boardKeys.push({ p: a + r * seg + seg * .9, cx: BD.W / 2, cy: (cyOf(r) + cyOf(r + 1)) / 2, s: s * .6, row: r });
-    }
-    boardKeys.push({ p: .93, cx: BD.W / 2, cy: BD.H / 2 - 20, s: fit, row: -1 });
-    boardKeys.unshift({ ...boardKeys[0], p: 0 });
-  }
-  const bdYear = $("#bdYear"), bdLabel = $("#bdLabel");
-  let bdShownRow = null;
-  function updateBoard(p) {
-    let k = boardKeys[boardKeys.length - 1], cam = { cx: k.cx, cy: k.cy, s: k.s }, row = k.row;
-    for (let i = 0; i < boardKeys.length - 1; i++) {
-      const A = boardKeys[i], B = boardKeys[i + 1];
-      if (p >= A.p && p <= B.p) { const t = sm((p - A.p) / (B.p - A.p)); cam = { cx: lerp(A.cx, B.cx, t), cy: lerp(A.cy, B.cy, t), s: lerp(A.s, B.s, t) }; row = t < .5 ? A.row : B.row; break; }
-    }
-    board.style.transform = `translate3d(${(innerWidth / 2 - cam.cx * cam.s).toFixed(1)}px,${(innerHeight / 2 - cam.cy * cam.s).toFixed(1)}px,0) scale(${cam.s.toFixed(4)})`;
-    if (row !== bdShownRow) {
-      bdShownRow = row;
-      const rows = D.board.rows;
-      bdYear.textContent = row >= 0 ? rows[row].yr : `${rows[0].yr}–${String(rows[rows.length - 1].yr).slice(2)}`;
-      bdLabel.textContent = row >= 0 ? `Row ${row + 1} of ${rows.length}` : "The whole flight";
-    }
-  }
-
-  /* ================= words split for the scroll reveal ================= */
-  $$("[data-words]").forEach(el => {
-    const text = el.textContent.trim();
-    el.setAttribute("aria-label", text);
-    el.innerHTML = text.split(/\s+/).map(w => `<span class="w" aria-hidden="true">${w}</span>`).join(" ");
-  });
-
-  /* ================= WebGL depth-photo renderer ================= */
-  const VS = `attribute vec2 p;varying vec2 vUv;void main(){vUv=p*.5+.5;gl_Position=vec4(p,0.,1.);}`;
-  const FS = `precision mediump float;
-uniform sampler2D uImg,uDepth;
-uniform vec2 uRes,uImgRes,uMouse,uFocus,uCenter,uStarPos;
-uniform float uZoom,uStrength,uShift,uDark,uGlow,uTime,uStarI;
-varying vec2 vUv;
-void main(){
-  float rs=uRes.x/uRes.y, ri=uImgRes.x/uImgRes.y;
-  vec2 sc = rs>ri ? vec2(1.,ri/rs) : vec2(rs/ri,1.);
-  vec2 c = clamp(uCenter, sc*.5, 1.-sc*.5);
-  vec2 uv = (vUv-.5)*sc + c;
-  float z = uZoom*1.045;
-  uv = (uv-uFocus)/z + uFocus;
-  uv += uMouse*uShift/z;
-  vec2 off = uMouse*uStrength/z;
-  float d0 = texture2D(uDepth, uv).r;
-  float d1 = texture2D(uDepth, uv + off*(d0-.45)).r;
-  uv += off*((d0+d1)*.5-.45);
-  uv = clamp(uv, .002, .998);
-  vec3 col = texture2D(uImg, uv).rgb;
-  float l = dot(col, vec3(.299,.587,.114));
-  col += uGlow * col * smoothstep(.55, .95, l) * .7;
-  vec2 q = (vUv-.5)*vec2(rs,1.)/max(rs,1.);
-  col *= mix(.5, 1., smoothstep(.95, .25, length(q)*1.3));
-  col *= 1.-uDark;
-  if (uStarI > .001) {
-    vec2 sp = (vUv-uStarPos)*vec2(rs,1.);
-    float r = length(sp);
-    float core = exp(-r*r*36000.);
-    float halo = exp(-r*48.);
-    float bloom = exp(-r*7.5);
-    float spk = exp(-abs(sp.y)*620.)*exp(-abs(sp.x)*30.) + exp(-abs(sp.x)*620.)*exp(-abs(sp.y)*30.);
-    float tw = .9 + .1*sin(uTime*2.1) + .04*sin(uTime*7.3);
-    col += (vec3(1.,.98,.94)*core*1.7 + vec3(1.,.86,.66)*halo*.65 + vec3(1.,.58,.28)*bloom*.2 + vec3(1.,.92,.84)*spk*.34) * uStarI * tw;
-  }
-  float g = fract(sin(dot(gl_FragCoord.xy + uTime*61.7, vec2(12.9898,78.233)))*43758.5453);
-  col += (g-.5)*.03;
-  gl_FragColor = vec4(col, 1.);
-}`;
-  const DPR = Math.min(1.75, window.devicePixelRatio || 1);
-  const loadImage = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; });
-  function makeRenderer(canvas, strength) {
-    const gl = canvas.getContext("webgl", { antialias: false, alpha: false });
-    if (!gl) return null;
-    const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
-    const pr = gl.createProgram();
-    gl.attachShader(pr, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, FS)); gl.linkProgram(pr);
-    if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error("link");
-    gl.useProgram(pr);
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(pr, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    const U = {};
-    ["uImg", "uDepth", "uRes", "uImgRes", "uMouse", "uFocus", "uCenter", "uStarPos", "uZoom", "uStrength", "uShift", "uDark", "uGlow", "uTime", "uStarI"].forEach(n => U[n] = gl.getUniformLocation(pr, n));
-    gl.uniform1i(U.uImg, 0); gl.uniform1i(U.uDepth, 1);
-    const texes = [gl.createTexture(), gl.createTexture()];
-    const upload = (unit, im) => {
-      gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, texes[unit]);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, im);
-      [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]].forEach(([a, b]) => gl.texParameteri(gl.TEXTURE_2D, a, b));
-    };
-    const r = { ready: false, size: [1, 1], fade: 0 };
-    r.setSource = v => Promise.all([loadImage("img/" + v.img), loadImage("img/" + v.depth)]).then(([im, dp]) => {
-      upload(0, im); upload(1, dp); r.size = [im.naturalWidth, im.naturalHeight]; r.ready = true; r.fade = 1;
-    });
-    r.draw = s => {
-      if (!r.ready) return;
-      const w = Math.round(canvas.clientWidth * DPR), h = Math.round(canvas.clientHeight * DPR);
-      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-      gl.viewport(0, 0, w, h);
-      r.fade *= .9;
-      gl.uniform2f(U.uRes, w, h); gl.uniform2f(U.uImgRes, r.size[0], r.size[1]);
-      gl.uniform2f(U.uMouse, s.mouse[0], -s.mouse[1]);
-      gl.uniform2f(U.uFocus, s.focus[0], 1 - s.focus[1]); gl.uniform2f(U.uCenter, s.center[0], 1 - s.center[1]);
-      gl.uniform2f(U.uStarPos, s.star ? s.star[0] : 0, s.star ? 1 - s.star[1] : 0);
-      gl.uniform1f(U.uZoom, s.zoom); gl.uniform1f(U.uStrength, strength); gl.uniform1f(U.uShift, .014);
-      gl.uniform1f(U.uDark, clamp(s.dark + r.fade)); gl.uniform1f(U.uGlow, s.glow); gl.uniform1f(U.uTime, s.time); gl.uniform1f(U.uStarI, s.starI || 0);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    };
-    return r;
-  }
-
-  /* ================= photo variants per scene ================= */
-  const VARIANTS = {
-    launch: [
-      { name: "Lift-off · photograph",  img: "hero.jpg",         depth: "hero-depth.png",         focus: [.514, .5], z: [1, 2.0],  cy: [.5, .5] },
-      { name: "Tower · painting",       img: "launch-tower.jpg", depth: "launch-tower-depth.png", focus: [.5, .42],  z: [1, 1.6],  cy: [.5, .5] },
-      { name: "Heavy lift · painting",  img: "launch-sls.jpg",   depth: "launch-sls-depth.png",   focus: [.48, .38], z: [1, 1.7],  cy: [.5, .5] },
-      { name: "Tower · on the wall",    img: "wall-tower.jpg",   depth: "wall-tower-depth.png",   focus: [.5, .46],  z: [1, 1.12], cy: [.5, .5] }
-    ],
-    engines: [
-      { name: "Engines firing · photograph", img: "engines.jpg", depth: "engines-depth.png", focus: [.47, .52], z: [1.02, 1.4], cy: [.36, .62] },
-      { name: "Engine bells · photograph",   img: "steel.jpg",   depth: "steel-depth.png",   focus: [.48, .62], z: [1.05, 1.45], cy: [.5, .74] }
-    ],
-    body: [
-      { name: "Steel body · photograph", img: "steel.jpg", depth: "steel-depth.png", focus: [.5, .4],  z: [1.25, 1.02], cy: [.62, .2] },
-      { name: "Tower arms · photograph", img: "tower.jpg", depth: "tower-depth.png", focus: [.5, .45], z: [1.2, 1.02],  cy: [.66, .22] }
-    ],
-    star: [
-      { name: "Separation · painting",     img: "space.jpg",      depth: "space-depth.png",      focus: [.46, .36], z: [1, 1.28], cy: [.5, .5] },
-      { name: "Supersonic · painting",     img: "n1.jpg",         depth: "n1-depth.png",         focus: [.66, .32], z: [1, 1.3],  cy: [.5, .5] },
-      { name: "Separation · on the wall",  img: "wall-space.jpg", depth: "wall-space-depth.png", focus: [.5, .46],  z: [1, 1.12], cy: [.5, .5] }
-    ]
-  };
-  const SCENE_CFG = {
-    launch:  { strength: .014, zr: [.04, .8], dim: p => Math.max(.5 * ramp(p, .18, .26) * (1 - ramp(p, .54, .6)), .32 * ramp(p, .56, .62), ramp(p, .9, 1) * .96) },
-    engines: { strength: .012, zr: [0, 1],    dim: p => Math.max(.96 * (1 - ramp(p, 0, .1)), .36, ramp(p, .92, 1) * .96) },
-    body:    { strength: .012, zr: [0, 1],    dim: p => Math.max(.96 * (1 - ramp(p, 0, .1)), .42, ramp(p, .92, 1) * .96) },
-    star:    { strength: .02,  zr: [0, 1],    dim: p => Math.max(.96 * (1 - ramp(p, 0, .1)), .12, .3 * ramp(p, .84, .92)) }
+  const UI = J.ui = {
+    view: "home",
+    tasksMode: lsGet("tasksMode", "list"),       // list | board
+    tasksProject: "all",
+    showDone: lsGet("showDone", false),
+    calMode: lsGet("calMode", "week"),            // week | month | day
+    /* On a Sunday afternoon or evening the calendar opens on the coming week: that's the one being planned. */
+    calDate: J.dow(J.today()) === 6 && new Date(J._now || Date.now()).getHours() >= 12 && lsGet("calMode", "week") === "week" && innerWidth >= 760 ? J.addDays(J.today(), 1) : J.today(),
+    homeDay: J.today(),
+    project: null,                                // open project id
+    openCourse: null,
+    hero: lsGet("hero", 0),
+    sel: null,                                    // keyboard-selected task id
+    scrolledFor: {}                               // timelines already scrolled to "now"
   };
 
-  /* ================= scenes ================= */
-  const scenes = $$(".scene").map(sec => {
-    const s = { sec, id: sec.id, p: 0, sp: 0, glow: 0, photo: sec.classList.contains("photo") };
-    s.shows = $$("[data-show]", sec).map(el => { const [a, b] = el.dataset.show.split(",").map(Number); return { el, a, b }; });
-    s.words = $$("[data-words]", sec).map(el => { const [a, b] = el.dataset.words.split(",").map(Number); return { a, b, spans: $$(".w", el) }; });
-    s.chapter = $(".chapter", sec); s.lbs = $$(".lb", sec);
-    if (s.photo) {
-      s.cfg = SCENE_CFG[s.id]; s.vars = VARIANTS[s.id];
-      s.vi = clamp(store.get("ascent-variant-" + s.id, 0) | 0, 0, s.vars.length - 1);
-      s.fallback = $(".fallback", sec);
-      try { s.r = makeRenderer($(".gl", sec), s.cfg.strength); } catch (e) { s.r = null; }
-      if (!s.r) sec.classList.add("no-gl");
-      const ctrl = $(".variant", sec);
-      ctrl.innerHTML = `<button type="button" class="prev" aria-label="Previous image">‹</button><span class="vn"></span><span class="vname"></span><button type="button" class="next" aria-label="Next image">›</button>`;
-      const apply = () => {
-        const v = s.vars[s.vi];
-        $(".vn", ctrl).textContent = `${pad2(s.vi + 1)}/${pad2(s.vars.length)}`;
-        $(".vname", ctrl).textContent = v.name;
-        s.fallback.src = "img/" + v.img;
-        if (s.r) s.r.setSource(v).catch(() => sec.classList.add("no-gl"));
-        store.set("ascent-variant-" + s.id, s.vi);
-      };
-      $(".prev", ctrl).addEventListener("click", () => { s.vi = (s.vi - 1 + s.vars.length) % s.vars.length; apply(); });
-      $(".next", ctrl).addEventListener("click", () => { s.vi = (s.vi + 1) % s.vars.length; apply(); });
-      apply();
-    }
-    return s;
-  });
+  const VIEWS_META = {
+    home:     { label: "Home",        part: "engines", key: "1" },
+    tasks:    { label: "Tasks",       part: "engines", key: "2" },
+    calendar: { label: "Calendar",    part: "engines", key: "3" },
+    projects: { label: "Projects",    part: "body",    key: "4" },
+    path:     { label: "Flight path", part: "command", key: "5" },
+    log:      { label: "Flight log",  part: "exhaust", key: "6" }
+  };
+  const ORDER = ["home", "tasks", "calendar", "projects", "path", "log"];
+  const COLORS = ["flame", "plume", "steel", "sage", "sand", "rose"];
+  const STATUS = { burning: "Burning · active", fuelling: "Fuelling · getting ready", coasting: "Coasting · paused", landed: "Landed · done" };
+  const STATUS_SHORT = { burning: "Burning", fuelling: "Fuelling", coasting: "Coasting", landed: "Landed" };
+  const HERO = [
+    { img: "hero.jpg", pos: "52% 36%" }, { img: "space.jpg", pos: "46% 40%" }, { img: "launch-tower.jpg", pos: "50% 30%" },
+    { img: "n1.jpg", pos: "62% 32%" }, { img: "engines.jpg", pos: "50% 45%" }, { img: "tower.jpg", pos: "50% 55%" }
+  ];
+  const DURS = [15, 30, 45, 60, 90, 120, 150, 180, 240];
 
-  /* ================= input ================= */
-  const mouse = [0, 0], mouseT = [0, 0];
-  let lastMove = -1e9;
-  addEventListener("pointermove", e => {
-    if (e.pointerType !== "mouse") return;
-    mouseT[0] = e.clientX / innerWidth * 2 - 1; mouseT[1] = e.clientY / innerHeight * 2 - 1; lastMove = performance.now();
-  }, { passive: true });
-  $("#restart").addEventListener("click", () => hyperjump("launch"));
-  $$(".open-part").forEach(b => b.addEventListener("click", e => openPage(b.dataset.part, e)));
+  const allTasks = () => S.list("tasks");
+  const projects = () => S.list("projects");
+  const project = id => (id && S.get("projects", id)) || null;
+  const cvar = c => `var(--c-${COLORS.includes(c) ? c : "flame"})`;
+  const short = (s, n = 40) => (s = String(s || "")).length > n ? s.slice(0, n - 1) + "…" : s;
+  const isDone = t => t.status === "done";
+  const plural = (n, w, ws) => `${n} ${n === 1 ? w : (ws || w + "s")}`;
 
-  /* ================= part pages ================= */
-  const page = $("#page"), pageBody = $("#pageBody"), pageRocket = $("#pageRocket");
-  pageRocket.innerHTML = rocketMarkup();
-  bindParts(pageRocket, part => { history.replaceState(null, "", "#part-" + part); syncPage(); });
-  let openPart = null, lastFocus = null;
-  function openPage(part, e) {
-    let x = innerWidth / 2, y = innerHeight / 2;
-    if (e && e.clientX) { x = e.clientX; y = e.clientY; }
-    else if (e && e.currentTarget && e.currentTarget.getBoundingClientRect) { const r = e.currentTarget.getBoundingClientRect(); x = r.left + r.width / 2; y = r.top + r.height / 2; }
-    page.style.setProperty("--cx", x + "px"); page.style.setProperty("--cy", y + "px");
-    lastFocus = document.activeElement;
-    if (location.hash === "#part-" + part) syncPage(); else location.hash = "part-" + part;
-  }
-  function closePage() { history.replaceState(null, "", location.pathname + location.search); syncPage(); }
-  function syncPage() {
-    const h = location.hash.slice(1);
-    const part = h.startsWith("part-") && PARTS[h.slice(5)] ? h.slice(5) : null;
-    if (part) {
-      renderPage(part);
-      if (!openPart) {
-        page.hidden = false; document.documentElement.style.overflow = "hidden"; if (lenis) lenis.stop();
-        requestAnimationFrame(() => requestAnimationFrame(() => page.classList.add("open")));
-        setTimeout(() => $("#pageClose").focus({ preventScroll: true }), 60);
-      }
-      openPart = part;
-      $$(".rp", pageRocket).forEach(g => g.classList.toggle("on", g.dataset.part === part));
-    } else if (openPart) {
-      openPart = null;
-      page.classList.remove("open");
-      document.documentElement.style.overflow = ""; if (lenis) lenis.start();
-      setTimeout(() => { if (!openPart) page.hidden = true; }, reduced ? 0 : 900);
-      if (lastFocus && lastFocus.focus) lastFocus.focus({ preventScroll: true });
-    }
-  }
-  $("#pageClose").addEventListener("click", closePage);
-  addEventListener("keydown", e => { if (e.key === "Escape" && openPart) closePage(); });
-  addEventListener("hashchange", syncPage);
+  /* Sorting inside a day: timed tasks by time, then by priority, then by your order. */
+  const byDay = (a, b) => (a.start == null) - (b.start == null) || (a.start || 0) - (b.start || 0) || (b.priority || 0) - (a.priority || 0) || (a.order || 0) - (b.order || 0);
+  const byDue = (a, b) => String(a.due || "9999").localeCompare(String(b.due || "9999")) || byDay(a, b);
 
-  function renderPage(part) {
-    const P = PARTS[part];
-    $("#pageEyebrow").innerHTML = `<span class="num">${pad2(5 - ORDER.indexOf(part))}</span><span class="rule"></span>${P.label} · ${P.sub}`;
-    $("#pageTitle").textContent = P.title;
-    $("#pageLede").textContent = P.lede;
-    pageBody.innerHTML = PAGES[part]();
-    page.scrollTop = 0;
-    if (part === "engines") wireToday();
+  /* Project progress: from its tasks; with no tasks yet, the hand-set number. */
+  function progressOf(pid) {
+    const ts = allTasks().filter(t => t.project === pid);
+    const done = ts.filter(isDone).length;
+    if (!ts.length) { const p = project(pid); return { done: 0, total: 0, pct: Math.round(((p && p.progress) || 0) * 100), manual: true }; }
+    return { done, total: ts.length, pct: Math.round(done / ts.length * 100), manual: false };
   }
-  const sec = (n, t) => `<h3 class="sec-h"><span class="num">${pad2(n)}</span>${esc(t)}</h3>`;
-  const bar = p => `<span class="prj-bar"><i style="--p:${p * 100}%"></i></span>`;
-  const fuelNow = () => D.fuelBase + tasks.reduce((s, t) => s + (t.done ? +t.h : 0), 0);
-  const PAGES = {
-    exhaust: () => D.flightLog.map((g, gi) => sec(gi + 1, g.group) + `<ul class="log">` +
-      g.items.map(([y, t, s]) => `<li><span class="y">${esc(y)}</span><div><b>${esc(t)}</b>${s ? `<span>${esc(s)}</span>` : ""}</div></li>`).join("") + `</ul>`).join(""),
-    engines: () => {
-      const f = fuelNow(), lit = tasks.filter(t => t.done).length;
-      return `<div class="stats">
-        <div class="stat"><div class="l">Engines lit</div><div class="v">${lit}/${tasks.length}</div><div class="s">today's burns</div></div>
-        <div class="stat"><div class="l">Fuel this week</div><div class="v">${f.toFixed(1)}<small> / ${D.fuelGoal} h</small></div><div class="gauge"><i style="width:${Math.min(100, f / D.fuelGoal * 100)}%"></i></div></div>
-        <div class="stat"><div class="l">${esc(D.dates.departureLabel)}</div><div class="v">T–${daysTo(D.dates.departure)}</div><div class="s">days</div></div>
-      </div>` + sec(1, "Burns") +
-      `<div class="today-list" id="todayList">${tasks.map((t, i) => `<div class="today-row">${burnButton(t, i)}<button type="button" class="rm-btn" data-rm="${i}">Remove</button></div>`).join("") || `<p class="note">No burns yet. Add one below.</p>`}</div>` +
-      sec(2, "Add a burn") +
-      `<form class="add" id="addForm" novalidate>
-        <label for="fTime">Time<input id="fTime" type="time" value="14:00"></label>
-        <label for="fWhat">What<input id="fWhat" type="text" placeholder="Vectors: lines and planes" maxlength="40"></label>
-        <label for="fProj">Project<select id="fProj">${["Habit", ...D.projects.map(p => p.n), "Flight school"].map(n => `<option>${esc(n)}</option>`).join("")}</select></label>
-        <label for="fH">Hours<input id="fH" type="number" min="0.25" max="8" step="0.25" value="1"></label>
-        <button class="cta" type="submit">Add burn</button>
-        <p class="err" id="fErr" role="alert"></p>
-      </form>
-      <p class="note">Burns are saved in this browser. Up to eight engines fit the cluster.</p>`;
+  const nextTaskOf = pid => allTasks().filter(t => t.project === pid && !isDone(t)).sort(byDue)[0] || null;
+
+  function dueLabel(t) {
+    if (!t.due) return "";
+    const n = J.daysUntil(t.due);
+    if (n < 0) return n === -1 ? "Yesterday" : J.fmtDate(t.due, { noDay: true });
+    return J.relDay(t.due);
+  }
+
+  /* ======================================================================
+     2. ACTIONS
+     ====================================================================== */
+  const A = J.act = {
+    add(fields) {
+      const t = Object.assign({
+        title: "", status: "todo", due: null, start: null, dur: null, project: null, priority: 0,
+        repeat: null, notes: "", doneAt: null, gcal: null, spawnedId: null
+      }, fields, { id: J.uid("t"), createdAt: Date.now(), order: S.nextOrder("tasks") });
+      return S.put("tasks", t);
     },
-    body: () => D.projects.map(pr => `<div class="proj"><div><span class="status">${esc(pr.status)}</span><h3>${esc(pr.n)}</h3></div>` +
-      `<span class="pct">${pad2(Math.round(pr.p * 100))}%</span>${bar(pr.p)}<ol>${pr.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol></div>`).join(""),
-    command: () => `<div class="stats">
-        <div class="stat"><div class="l">${esc(D.dates.departureLabel)}</div><div class="v">T–${daysTo(D.dates.departure)}</div><div class="s">days</div></div>
-        <div class="stat"><div class="l">O-Week</div><div class="v">T–${daysTo(D.dates.oweek)}</div><div class="s">days · 8 Feb 2027</div></div>
-        <div class="stat"><div class="l">Term 1</div><div class="v">T–${daysTo(D.dates.term1)}</div><div class="s">days · 15 Feb 2027</div></div>
-      </div>` + sec(1, "Year 1 at UNSW · 2027") +
-      `<div class="terms">${D.year1.map(t => `<div class="term"><h4>${esc(t.term)}</h4><ul>${t.c.map(([c, n]) => `<li><code>${esc(c)}</code><span>${esc(n)}</span></li>`).join("")}</ul></div>`).join("")}</div>` +
-      sec(2, "The rest of the degree") +
-      `<div class="later">${D.later.map(y => `<div><h4>${esc(y.yr)}</h4><ul>${y.c.map(c => { const [code, ...rest] = c.split(" "); return `<li><code>${esc(code)}</code><span>${esc(rest.join(" "))}</span></li>`; }).join("")}</ul></div>`).join("")}</div>
-      <p class="note">Industrial training is 60 days of approved work experience (ENGG4999), usually done over a summer. Courses come from UNSW's 2025 sample study plan for Aerospace (AEROAH). UNSW moves from terms to two semesters a year from 2028, so Years 2–4 will be reshuffled. Check myPlan when you enrol.</p>`,
-    star: () => sec(1, "Skills, nearest first") + `<ul class="log">` +
-      D.future.map(f => `<li><span class="y">${esc(f.eta)}</span><div><b>${esc(f.n)}</b><span>${esc(f.m)}. ${esc(f.why)}</span></div></li>`).join("") + `</ul>` +
-      sec(2, "What opens up") + `<ul class="log">` + D.prospects.map(([t, s], i) => `<li><span class="y">${pad2(i + 1)}</span><div><b>${esc(t)}</b><span>${esc(s)}</span></div></li>`).join("") + `</ul>`
-  };
-  function wireToday() {
-    const list = $("#todayList"), form = $("#addForm"), err = $("#fErr");
-    list.addEventListener("click", e => {
-      const rm = e.target.closest("[data-rm]");
-      if (rm) { tasks.splice(+rm.dataset.rm, 1); saveTasks(); renderCluster(); renderPage("engines"); return; }
-      const b = e.target.closest(".burn"); if (b) toggleTask(+b.dataset.i);
-    });
-    ["fWhat", "fH", "fTime"].forEach(id => $("#" + id).addEventListener("input", () => { err.textContent = ""; }));
-    form.addEventListener("submit", e => {
-      e.preventDefault();
-      const what = $("#fWhat").value.trim(), h = parseFloat($("#fH").value), t = $("#fTime").value;
-      if (!what) { err.textContent = "Give the burn a name first."; $("#fWhat").focus(); return; }
-      if (!(h > 0 && h <= 8)) { err.textContent = "Hours must be between 0.25 and 8."; $("#fH").focus(); return; }
-      if (!t) { err.textContent = "Pick a time."; $("#fTime").focus(); return; }
-      if (tasks.length >= 8) { err.textContent = "Eight engines is the limit. Remove one first."; return; }
-      tasks.push({ t, what, proj: $("#fProj").value, h, done: false });
-      tasks.sort((a, b) => a.t.localeCompare(b.t));
-      saveTasks(); renderCluster(); renderPage("engines");
-    });
-  }
-
-  /* ================= frame loop ================= */
-  const progEl = $("#progress"), altEl = $("#alt");
-  const SCENE_PART = { launch: "exhaust", rocket: null, engines: "engines", body: "body", command: "command", star: "star" };
-  let activeId = "";
-  function layerStyle(o, p) {
-    const fin = o.a <= 0 ? 1 : ramp(p, o.a, o.a + .06);
-    const fout = o.b >= 1 ? 1 : 1 - ramp(p, o.b - .06, o.b);
-    const v = Math.min(fin, fout);
-    o.el.style.opacity = v.toFixed(3);
-    o.el.style.visibility = v < .01 ? "hidden" : "visible";
-    o.el.style.translate = `0 ${((1 - fin) * 22 - (1 - fout) * 16).toFixed(1)}px`;
-    if (o.el.dataset.fill) o.el.style.setProperty("--fill", sm((p - o.a) / .12).toFixed(3));
-  }
-  function frame(now) {
-    const vh = innerHeight, sy = scrollY;
-    const max = Math.max(1, document.documentElement.scrollHeight - vh);
-    progEl.style.setProperty("--prog", (sy / max * 100).toFixed(2) + "%");
-    altEl.textContent = `ALT ${(sy / max * 100).toFixed(1).padStart(5, "0")} KM`;
-    const idle = now - lastMove > 2500;
-    const tx = reduced ? 0 : idle ? Math.sin(now * .00021) * .4 : mouseT[0];
-    const ty = reduced ? 0 : idle ? Math.cos(now * .00017) * .25 : mouseT[1];
-    mouse[0] += (tx - mouse[0]) * .045; mouse[1] += (ty - mouse[1]) * .045;
-
-    scenes.forEach(s => {
-      const top = s.sec.offsetTop, h = s.sec.offsetHeight;
-      const visible = sy + vh > top && sy < top + h;
-      s.p = clamp((sy - top) / (h - vh));
-      s.sp = reduced || snap ? s.p : s.sp + (s.p - s.sp) * .14;
-      if (Math.abs(s.p - s.sp) < .0005) s.sp = s.p;
-      const mid = sy + vh / 2;
-      if (mid >= top && mid < top + h && s.id !== activeId) {
-        activeId = s.id;
-        mrActive = SCENE_PART[s.id];
-        $$(".rp", mrSvg).forEach(g => g.classList.toggle("on", g.dataset.part === mrActive));
-        mrLabel.textContent = mrActive ? PARTS[mrActive].label : "The rocket";
-        $$("#jumps button").forEach(b => b.classList.toggle("on", b.dataset.jump === s.id));
+    update(id, part) { return S.patch("tasks", id, part); },
+    setStatus(id, status) {
+      const t = S.get("tasks", id);
+      if (!t || t.status === status) return;
+      if (status === "done") return A.complete(t);
+      if (isDone(t)) return A.uncomplete(t, status);
+      S.patch("tasks", id, { status });
+    },
+    toggle(id) { const t = S.get("tasks", id); if (t) isDone(t) ? A.uncomplete(t) : A.complete(t); },
+    /* Finishing a repeating task books the next one; un-ticking takes it back. */
+    complete(t) {
+      const part = { status: "done", doneAt: Date.now() };
+      if (t.repeat && !t.spawnedId) {
+        const next = A.add({ title: t.title, due: J.nextRepeat(t.repeat, t.due), start: t.start, dur: t.dur, project: t.project, priority: t.priority, repeat: t.repeat, notes: t.notes });
+        part.spawnedId = next.id;
+        J.toast(`Done. Next one: ${J.relDay(next.due)}${J.daysUntil(next.due) > 1 ? " " + J.fmtDate(next.due, { noDay: true }) : ""}`);
       }
-      if (!visible || openPart) return;
-      const p = s.sp;
-      if (s.chapter) s.chapter.style.opacity = (1 - ramp(p, .035, .1)).toFixed(3);
-      if (s.lbs.length) { const lb = 11 * Math.max(1 - ramp(p, .07, .16), ramp(p, .93, 1)); s.lbs.forEach(el => el.style.setProperty("--lb", lb.toFixed(2) + "vh")); }
-      if (s.photo) {
-        const v = s.vars[s.vi], c = s.cfg;
-        const zoom = lerp(v.z[0], v.z[1], sm(ramp(p, c.zr[0], c.zr[1])));
-        const center = [.5, lerp(v.cy[0], v.cy[1], sm(p))], dark = c.dim(p);
-        if (s.id === "engines") s.glow = lerp(s.glow, glowTarget, .06);
-        const glow = s.id === "engines" ? s.glow * (.85 + .15 * Math.sin(now * .012)) : 0;
-        const starI = s.id === "star" ? ramp(p, .18, .34) : 0;
-        if (s.r && s.r.ready && !s.sec.classList.contains("no-gl")) {
-          s.r.draw({ zoom, focus: v.focus, center, mouse, dark, glow, time: (now / 1000) % 1000, star: [starGoal.x / 100, starGoal.y / 100], starI });
-        } else {
-          s.fallback.style.transformOrigin = `${v.focus[0] * 100}% ${v.focus[1] * 100}%`;
-          s.fallback.style.objectPosition = `50% ${center[1] * 100}%`;
-          s.fallback.style.transform = `scale(${zoom.toFixed(3)})`;
-          s.fallback.style.filter = `brightness(${(1 - dark).toFixed(3)})`;
+      S.patch("tasks", t.id, part);
+    },
+    uncomplete(t, status = "todo") {
+      const part = { status, doneAt: null, spawnedId: null };
+      const sp = t.spawnedId && S.get("tasks", t.spawnedId);
+      if (sp && !isDone(sp)) S.remove("tasks", sp.id);
+      S.patch("tasks", t.id, part);
+    },
+    remove(id) {
+      const t = S.get("tasks", id);
+      if (!t) return;
+      S.remove("tasks", id);
+      if (t.title.trim()) J.toast(`Deleted “${short(t.title, 32)}”`, { label: "Undo", run: () => S.put("tasks", t) });
+    },
+    schedule(id, due, start) {
+      const t = S.get("tasks", id);
+      if (!t) return;
+      const part = { due };
+      if (start !== undefined) part.start = start;
+      if (!due) part.start = null;
+      if (part.start != null && !t.dur) part.dur = 60;
+      S.patch("tasks", id, part);
+    },
+    /* Quick add: parse the text, apply the place's defaults, save. */
+    fromText(text, defaults = {}, ignore = []) {
+      const r = J.parseQuick(text, { projects: projects(), ignore });
+      if (!r.title) return null;
+      return A.add({
+        title: r.title,
+        due: r.due || defaults.due || null,
+        start: r.start, dur: r.dur,
+        project: r.project || defaults.project || null,
+        priority: r.priority, repeat: r.repeat,
+        status: defaults.status || "todo"
+      });
+    },
+    newProject(name) {
+      const p = { id: J.uid("p"), name: name || "New project", status: "burning", color: COLORS[projects().length % COLORS.length], notes: "", progress: 0, order: S.nextOrder("projects"), createdAt: Date.now() };
+      S.put("projects", p);
+      return p;
+    },
+    move(col, id, dir, sameGroup) {
+      const list = S.list(col).filter(x => !sameGroup || sameGroup(x));
+      const i = list.findIndex(x => x.id === id), j = i + dir;
+      if (i < 0 || j < 0 || j >= list.length) return;
+      list.splice(j, 0, list.splice(i, 1)[0]);
+      list.forEach((x, k) => { if (x.order !== k) S.patch(col, x.id, { order: k }); });
+    }
+  };
+
+  /* ======================================================================
+     3. SHARED PIECES
+     ====================================================================== */
+
+  /* ---------- a task row ---------- */
+  function taskRow(t, o = {}) {
+    const p = project(t.project), done = isDone(t);
+    const late = !done && t.due && t.due < J.today();
+    const meta = [];
+    if (o.date !== false && t.due) meta.push(`<span class="${late ? "late" : ""}">${esc(late ? "Overdue · " + dueLabel(t) : dueLabel(t))}</span>`);
+    if (t.start != null) meta.push(`<span class="tc">${J.fmtRange(t.start, t.dur)}</span>`);
+    else if (t.dur) meta.push(`<span class="tc">${J.fmtDur(t.dur)}</span>`);
+    if (p && o.project !== false) meta.push(`<span class="pj"><i class="sw" style="--c:${cvar(p.color)}"></i>${esc(p.name)}</span>`);
+    if (t.status === "doing") meta.push(`<span class="doing">In progress</span>`);
+    if (t.repeat && !done) meta.push(`<span class="rpt" title="${esc(J.REPEAT_LABEL[t.repeat])}">${J.icon.repeat}</span>`);
+    if (t.gcal) meta.push(`<span class="gc" title="Sent to Google Calendar">Google</span>`);
+    if (t.notes) meta.push(`<span class="nt" title="Has notes">Notes</span>`);
+    const prio = t.priority ? `<span class="prio p${t.priority}" aria-label="${["", "Low", "Medium", "High"][t.priority]} priority">${"!".repeat(t.priority)}</span>` : "";
+    return `<div class="trow${done ? " done" : ""}${UI.sel === t.id ? " sel" : ""}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}"}' data-drag-label="${esc(short(t.title, 48))}" tabindex="0">` +
+      `<button type="button" class="grip" tabindex="-1" aria-hidden="true">${J.icon.grip}</button>` +
+      `<button type="button" class="chk" data-act="toggle" data-id="${t.id}" aria-pressed="${done}" aria-label="${done ? "Mark not done" : "Mark done"}: ${esc(t.title)}">${J.icon.check}</button>` +
+      `<div class="tmain"><span class="ttl">${prio}${esc(t.title || "Untitled")}</span>${meta.length ? `<span class="tmeta">${meta.join("")}</span>` : ""}</div></div>`;
+  }
+  const taskList = (ts, o) => ts.length ? `<div class="tlist">${ts.map(t => taskRow(t, o)).join("")}</div>` : "";
+
+  /* ---------- quick add ---------- */
+  const qaIgnore = {};
+  function quickAdd(key, o = {}) {
+    return `<form class="qa" data-qa="${key}" data-due="${o.due || ""}" data-project="${o.project || ""}" autocomplete="off">` +
+      `<span class="qa-plus">${J.icon.plus}</span>` +
+      `<input id="qa-${key}" data-keep class="qa-in" type="text" maxlength="200" placeholder="${esc(o.placeholder || "Add a task")}" aria-label="Add a task. Dates, times, #project and !priority are understood.">` +
+      `<div class="qa-chips" aria-live="polite"></div></form>`;
+  }
+  function qaPreview(form) {
+    const input = $(".qa-in", form), box = $(".qa-chips", form), key = form.dataset.qa;
+    const text = input.value;
+    if (!text.trim()) { box.innerHTML = ""; form.classList.remove("has"); return; }
+    const r = J.parseQuick(text, { projects: projects(), ignore: qaIgnore[key] || [] });
+    let h = r.tokens.map(tk => `<span class="chip ${tk.type}"><span>${esc(tk.label)}</span><button type="button" data-ignore="${esc(tk.text)}" aria-label="Don't read “${esc(tk.text)}” as ${tk.type}">${J.icon.close}</button></span>`).join("");
+    if (!r.due && form.dataset.due === "today") h += `<span class="chip ghost">Today</span>`;
+    if (r.unknownProject) h += `<span class="chip warn">No project called #${esc(r.unknownProject)} <button type="button" class="link" data-newproj="${esc(r.unknownProject)}">Create it</button></span>`;
+    h += `<span class="qa-hint">Enter to add</span>`;
+    box.innerHTML = h;
+    form.classList.add("has");
+  }
+  function qaSubmit(form) {
+    const input = $(".qa-in", form), key = form.dataset.qa;
+    const due = form.dataset.due === "today" ? J.today() : (form.dataset.due || null);
+    const t = A.fromText(input.value, { due, project: form.dataset.project || null }, qaIgnore[key] || []);
+    if (!t) { input.focus(); return; }
+    input.value = ""; qaIgnore[key] = []; qaPreview(form);
+    J.toast(`Added “${short(t.title, 30)}”${t.due ? " · " + J.relDay(t.due) : " to the inbox"}`);
+  }
+  document.addEventListener("input", e => { const f = e.target.closest && e.target.closest(".qa"); if (f && e.target.classList.contains("qa-in")) qaPreview(f); });
+  document.addEventListener("submit", e => { const f = e.target.closest(".qa"); if (f) { e.preventDefault(); qaSubmit(f); } });
+  document.addEventListener("click", e => {
+    const ig = e.target.closest("[data-ignore]");
+    if (ig) { const f = ig.closest(".qa"); (qaIgnore[f.dataset.qa] = qaIgnore[f.dataset.qa] || []).push(ig.dataset.ignore); qaPreview(f); $(".qa-in", f).focus(); return; }
+    const np = e.target.closest("[data-newproj]");
+    if (np) { const f = np.closest(".qa"); const p = A.newProject(np.dataset.newproj.replace(/[-_]/g, " ")); J.toast(`Project “${p.name}” created`); qaPreview(f); $(".qa-in", f).focus(); }
+  });
+
+  /* ---------- notes (click to edit, Markdown when read) ---------- */
+  const notesSave = {};
+  function notesBlock(key, text, onSave, placeholder) {
+    notesSave[key] = onSave;
+    return `<div class="notes" data-notes="${esc(key)}">` +
+      `<div class="md" tabindex="0" role="button" aria-label="Edit notes">${J.md(text) || `<p class="ph">${esc(placeholder || "Nothing written yet. Click to write.")}</p>`}</div>` +
+      `<textarea id="notes-${esc(key.replace(/[^a-z0-9]/gi, "_"))}" data-keep class="notes-ta" hidden spellcheck="true">${esc(text || "")}</textarea>` +
+      `<p class="notes-help" hidden># heading · - list · - [ ] checkbox · **bold** · links work · click outside to save</p></div>`;
+  }
+  function notesEdit(block, on) {
+    const md = $(".md", block), ta = $(".notes-ta", block), help = $(".notes-help", block);
+    md.hidden = on; ta.hidden = !on; help.hidden = !on; block.classList.toggle("editing", on);
+    if (on) { autoGrow(ta); ta.focus(); }
+  }
+  const autoGrow = ta => { ta.style.height = "auto"; ta.style.height = Math.max(120, ta.scrollHeight + 2) + "px"; };
+  document.addEventListener("click", e => {
+    const chk = e.target.closest(".md-check");
+    if (chk) {
+      const block = chk.closest(".notes"), ta = $(".notes-ta", block);
+      const next = J.mdToggleLine(ta.value, +chk.dataset.line);
+      ta.value = next; notesSave[block.dataset.notes](next);
+      return;
+    }
+    const md = e.target.closest(".notes .md");
+    if (md && !e.target.closest("a")) notesEdit(md.closest(".notes"), true);
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches && e.target.matches(".notes .md")) { e.preventDefault(); notesEdit(e.target.closest(".notes"), true); } });
+  document.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("notes-ta")) autoGrow(e.target); });
+  document.addEventListener("focusout", e => {
+    if (!e.target.classList || !e.target.classList.contains("notes-ta")) return;
+    const block = e.target.closest(".notes");
+    const fn = notesSave[block.dataset.notes];
+    if (fn) fn(e.target.value);
+    notesEdit(block, false);
+  });
+
+  /* ---------- the day timeline (Home's schedule and the calendar's columns) ---------- */
+  function sentIds() { const s = new Set(); allTasks().forEach(t => { if (t.gcal && t.gcal.id) s.add(t.gcal.id); }); return s; }
+  function dayData(ymd, sent) {
+    const evs = G.eventsOn(ymd).filter(e => !sent.has(e.id));
+    const ts = allTasks().filter(t => t.due === ymd && (UI.showDone || !isDone(t) || (t.doneAt && J.ymd(new Date(t.doneAt)) === J.today())));
+    return {
+      allDay: evs.filter(e => e.allDay), timed: evs.filter(e => !e.allDay),
+      timedTasks: ts.filter(t => t.start != null), untimed: ts.filter(t => t.start == null).sort(byDay)
+    };
+  }
+  /* Side-by-side columns for things that overlap in time. */
+  function layoutCols(items) {
+    items.sort((a, b) => a.s - b.s || (b.e - b.s) - (a.e - a.s));
+    let cluster = [], colsEnd = [], clusterEnd = -1;
+    const finish = () => { const n = colsEnd.length; cluster.forEach(it => { it.cols = n; }); cluster = []; colsEnd = []; };
+    items.forEach(it => {
+      if (it.s >= clusterEnd) { finish(); clusterEnd = -1; }
+      let c = colsEnd.findIndex(end => end <= it.s);
+      if (c < 0) { c = colsEnd.length; colsEnd.push(0); }
+      colsEnd[c] = it.e; it.col = c; cluster.push(it);
+      clusterEnd = Math.max(clusterEnd, it.e);
+    });
+    finish();
+    return items;
+  }
+  function hourRange(dates, sent) {
+    let h0 = 6;
+    dates.forEach(d => {
+      const x = dayData(d, sent);
+      x.timed.forEach(e => { if (!e.auto) h0 = Math.min(h0, Math.floor(e.segStart / 60)); });
+      x.timedTasks.forEach(t => { h0 = Math.min(h0, Math.floor(t.start / 60)); });
+    });
+    return { h0: Math.max(0, h0), h1: 24 };
+  }
+  function timelineCol(ymd, R, pph, sent, o = {}) {
+    const x = dayData(ymd, sent);
+    const top = m => (Math.max(m, R.h0 * 60) - R.h0 * 60) / 60 * pph;
+    const auto = x.timed.filter(e => e.auto), real = x.timed.filter(e => !e.auto);
+    const items = layoutCols([
+      ...real.map(e => ({ k: "ev", s: e.segStart, e: Math.max(e.segEnd, e.segStart + 15), ev: e })),
+      ...x.timedTasks.map(t => ({ k: "tk", s: t.start, e: t.start + (t.dur || 30), t }))
+    ]);
+    let h = auto.map(e => `<div class="blk auto" style="top:${top(e.segStart)}px;height:${Math.max(14, top(e.segEnd) - top(e.segStart) - 1)}px" title="${esc(e.title)} · ${J.fmtTime(e.segStart)}–${J.fmtTime(e.segEnd % 1440 === 0 && e.segEnd ? 1440 : e.segEnd)} (Reclaim block)"><span>${esc(e.title.replace(/^[^\p{L}\p{N}]+/u, ""))}</span></div>`).join("");
+    items.forEach(it => {
+      const y = top(it.s), hh = Math.max(20, top(it.e) - y - 2);
+      const pos = `top:${y}px;height:${hh}px;left:calc(${it.col / it.cols * 100}% + 2px);width:calc(${100 / it.cols}% - 4px)`;
+      const tiny = hh < 34 ? " tiny" : "";
+      if (it.k === "ev") {
+        const e = it.ev;
+        h += `<button type="button" class="blk ev${tiny}${e.transparent ? " free" : ""}" style="${pos};--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${ymd}"><b>${esc(e.title)}</b><span class="tc">${J.fmtTime(e.segStart)}–${J.fmtTime(e.segEnd)}</span></button>`;
+      } else {
+        const t = it.t, p = project(t.project), done = isDone(t);
+        h += `<div class="blk tk${tiny}${done ? " done" : ""}" style="${pos};--c:${p ? cvar(p.color) : "var(--ink)"}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}","block":1}' data-drag-label="${esc(short(t.title, 40))}">` +
+          `<button type="button" class="chk" data-act="toggle" data-id="${t.id}" aria-pressed="${done}" aria-label="${done ? "Mark not done" : "Mark done"}: ${esc(t.title)}">${J.icon.check}</button>` +
+          `<b>${esc(t.title || "Untitled")}</b><span class="tc">${J.fmtRange(t.start, t.dur || 30)}${p ? " · " + esc(p.name) : ""}</span><span class="rz" data-rz="${t.id}" aria-hidden="true"></span></div>`;
+      }
+    });
+    if (ymd === J.today()) {
+      const nm = J.nowMin();
+      if (nm >= R.h0 * 60) h += `<div class="now-line" style="top:${top(nm)}px"><span class="tc">${J.fmtTime(nm)}</span></div>`;
+    }
+    return `<div class="tl-col${o.cls ? " " + o.cls : ""}" data-drop="slot" data-date="${ymd}" data-h0="${R.h0}" data-pph="${pph}" style="height:${(R.h1 - R.h0) * pph}px;--pph:${pph}px">${h}</div>`;
+  }
+  const hourLabels = (R, pph) => `<div class="tl-hours" style="height:${(R.h1 - R.h0) * pph}px">` +
+    Array.from({ length: R.h1 - R.h0 }, (_, i) => `<span style="top:${i * pph}px">${J.pad2(R.h0 + i)}:00</span>`).join("") + `</div>`;
+
+  /* Drop targets */
+  function minuteAt(col, y) {
+    const r = col.getBoundingClientRect(), h0 = +col.dataset.h0, pph = +col.dataset.pph;
+    const m = Math.round((h0 * 60 + (y - r.top) / pph * 60) / 15) * 15;
+    return J.clamp(m, 0, 1440 - 15);
+  }
+  J.dnd.register("slot", {
+    over(col, p, x, y) {
+      const t = S.get("tasks", p.id); if (!t) return "";
+      const m = minuteAt(col, y - (p.block ? p.grabY : 0)), dur = t.dur || 60, pph = +col.dataset.pph, h0 = +col.dataset.h0;
+      let pv = $(".drop-prev", col);
+      if (!pv) { pv = document.createElement("div"); pv.className = "drop-prev"; col.appendChild(pv); }
+      pv.style.top = ((m - h0 * 60) / 60 * pph) + "px"; pv.style.height = (dur / 60 * pph - 2) + "px";
+      pv.textContent = J.fmtRange(m, dur);
+      return `${J.relDay(col.dataset.date)} · ${J.fmtRange(m, dur)}`;
+    },
+    leave(col) { const pv = $(".drop-prev", col); if (pv) pv.remove(); },
+    drop(col, p, x, y) { A.schedule(p.id, col.dataset.date, minuteAt(col, y - (p.block ? p.grabY : 0))); }
+  });
+  J.dnd.register("day", {
+    over(el) { return el.dataset.date ? J.fmtDate(el.dataset.date) + (el.dataset.untimed ? " · no time" : "") : "No date"; },
+    drop(el, p) {
+      const t = S.get("tasks", p.id); if (!t) return;
+      A.schedule(p.id, el.dataset.date || null, el.dataset.untimed ? null : t.start);
+    }
+  });
+  J.dnd.register("status", {
+    over(el) { return { todo: "To do", doing: "Doing", done: "Done" }[el.dataset.status]; },
+    drop(el, p) { A.setStatus(p.id, el.dataset.status); }
+  });
+  J.dnd.register("unsched", { over() { return "Unschedule the time"; }, drop(el, p) { A.update(p.id, { start: null }); } });
+
+  /* Resize a task block from its bottom edge to change the duration. */
+  document.addEventListener("pointerdown", e => {
+    const rz = e.target.closest(".rz");
+    if (!rz || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const blk = rz.closest(".blk"), col = rz.closest(".tl-col"), t = S.get("tasks", rz.dataset.rz);
+    if (!t || !col) return;
+    const pph = +col.dataset.pph;
+    let dur = t.dur || 30;
+    const move = ev => {
+      const m = minuteAt(col, ev.clientY);
+      dur = Math.max(15, m - t.start);
+      blk.style.height = (dur / 60 * pph - 2) + "px";
+      const lab = $(".tc", blk); if (lab) lab.textContent = J.fmtRange(t.start, dur);
+    };
+    const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); A.update(t.id, { dur }); };
+    addEventListener("pointermove", move); addEventListener("pointerup", up);
+  });
+
+  /* Clicking an empty spot on a timeline makes a new task there. */
+  function newTaskAt(col, y) {
+    const m = minuteAt(col, y - 10);
+    const t = A.add({ title: "", due: col.dataset.date, start: m, dur: 60 });
+    TD.open(t.id, { focusTitle: true });
+  }
+
+  function eventDetails(calId, evId, ymd) {
+    const e = G.eventsOn(ymd).find(x => x.calId === calId && x.id === evId);
+    if (!e) return;
+    J.form.open({
+      eyebrow: "Google Calendar · " + e.calName, title: e.title, fields: [{
+        key: "x", type: "html", label: "When",
+        html: `<p class="dw-text">${e.allDay ? (e.startYmd === e.endYmd ? J.fmtDate(e.startYmd, { long: true }) : J.fmtDate(e.startYmd) + " – " + J.fmtDate(e.endYmd)) + " · all day" : J.fmtDate(ymd, { long: true }) + " · " + J.fmtTime(e.segStart) + "–" + J.fmtTime(e.segEnd)}</p>` +
+          (e.url ? `<p><a class="btn" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Open in Notion Calendar ${J.icon.ext}</a></p>` : "") +
+          `<p class="dw-note">Jules only reads your calendar here. Change or delete events in Google or Notion Calendar.</p>`
+      }], value: {}
+    });
+  }
+
+  /* ---------- small view furniture ---------- */
+  const viewHead = (title, sub, right = "") => `<header class="vhead"><div><h1 class="vtitle">${esc(title)}</h1>${sub ? `<p class="vsub">${sub}</p>` : ""}</div><div class="vtools">${right}</div></header>`;
+  const tabs = (name, cur, opts) => `<div class="tabs" role="tablist">${opts.map(([k, l]) => `<button type="button" role="tab" aria-selected="${cur === k}" data-tab="${name}" data-val="${k}">${esc(l)}</button>`).join("")}</div>`;
+  const secHead = (t, right = "") => `<div class="shead"><h2>${esc(t)}</h2>${right}</div>`;
+  function gcalNote() {
+    const d = G.describe();
+    if (d.tone === "ok") return "";
+    return `<p class="gnote ${d.tone}">${esc(d.text)}${d.action === "approve" ? ` <button type="button" class="link" data-act="gapprove">Allow</button>` : d.action === "retry" ? ` <button type="button" class="link" data-act="gretry">Try again</button>` : ""}</p>`;
+  }
+
+  /* ======================================================================
+     4. VIEWS
+     ====================================================================== */
+  const V = {};
+
+  /* ---------------- HOME: today at a glance ---------------- */
+  V.home = () => {
+    const today = J.today(), meta = S.meta(), all = allTasks();
+    const open = all.filter(t => !isDone(t));
+    const overdue = open.filter(t => t.due && t.due < today).sort(byDue);
+    const todays = open.filter(t => t.due === today).sort(byDay);
+    const doneToday = all.filter(t => isDone(t) && (t.due === today || (t.doneAt && J.ymd(new Date(t.doneAt)) === today))).sort((a, b) => (a.doneAt || 0) - (b.doneAt || 0));
+    const tomorrow = open.filter(t => t.due === J.addDays(today, 1)).sort(byDay);
+    const inbox = open.filter(t => !t.due).sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.order - b.order);
+    const planned = todays.reduce((s, t) => s + (t.dur || 0), 0);
+    const nm = J.nowMin(), next = todays.find(t => t.start != null && t.start + (t.dur || 30) > nm);
+    const hr = new Date(J._now || Date.now()).getHours();
+    const greet = hr < 5 ? "Late night" : hr < 12 ? "Morning" : hr < 18 ? "Afternoon" : "Evening";
+    const H = HERO[UI.hero % HERO.length];
+    const cds = (meta.countdowns || []).filter(c => c.date && J.daysUntil(c.date) >= 0).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 3);
+
+    /* the cinematic band */
+    let h = `<section class="hero" aria-label="Today">
+      <img class="hero-img" src="img/${H.img}" alt="" style="object-position:${H.pos}">
+      <div class="hero-shade"></div>
+      <div class="hero-in">
+        <p class="eyebrow-s"><span class="tc" id="clock">${J.fmtTime(nm)}</span> · ${esc(J.fmtDate(today, { long: true }))}</p>
+        <h1 class="hero-title">${greet}${meta.name ? ", " + esc(meta.name) : ""}</h1>
+        <p class="hero-sub">${todays.length ? `${plural(todays.length, "task")} today${planned ? " · " + J.fmtDur(planned) + " planned" : ""}` : "Nothing booked today yet"}${next ? ` · next: <b>${esc(short(next.title, 30))}</b> at ${J.fmtTime(next.start)}` : ""}${overdue.length ? ` · <span class="late">${overdue.length} overdue</span>` : ""}</p>
+      </div>
+      <div class="hero-cd">${cds.map(c => { const n = J.daysUntil(c.date); return `<div class="cd"><span class="cd-n tc">${n === 0 ? "TODAY" : "T–" + n}</span><span class="cd-l">${esc(c.label)}</span><span class="cd-d">${esc(J.fmtDate(c.date))}</span></div>`; }).join("")}
+        <button type="button" class="cd-edit link" data-act="settings">Edit countdowns</button></div>
+      <button type="button" class="hero-swap" data-act="hero" aria-label="Change the picture">${J.pad2(UI.hero % HERO.length + 1)} / ${J.pad2(HERO.length)}</button>
+    </section>`;
+
+    if (S.mode === "db" && S.isEmpty()) h += emptyWelcome();
+
+    /* today list + schedule */
+    h += `<div class="home-main">
+      <section class="sec today" aria-label="Today's tasks">
+        ${secHead("Today", `<span class="count tc">${todays.length + doneToday.length ? `${doneToday.length}/${todays.length + doneToday.length} done` : ""}</span>`)}
+        ${quickAdd("home", { due: "today", placeholder: "Add to today… try “Vectors 9am 1h #prep”" })}
+        ${overdue.length ? `<p class="lbl late">Overdue</p>${taskList(overdue)}` : ""}
+        ${todays.length ? taskList(todays, { date: false }) : (overdue.length ? "" : `<p class="empty">A clear day. Add something above, or drag something in from the inbox.</p>`)}
+        ${doneToday.length ? `<p class="lbl">Burned today</p>${taskList(doneToday, { date: false })}` : ""}
+        ${tomorrow.length ? `<p class="lbl" data-drop="day" data-date="${J.addDays(today, 1)}">Tomorrow</p>${taskList(tomorrow, { date: false })}` : ""}
+      </section>
+      <section class="sec sched" aria-label="Schedule">${homeSchedule()}</section>
+    </div>`;
+
+    /* the lower row: week, projects, flight path, inbox */
+    h += `<div class="home-low">
+      <section class="sec">${secHead("Next 7 days", `<span class="count tc" title="Hours of tasks finished this week (Mon–Sun) against your weekly goal">${fuelText()}</span>`)}${weekBars()}</section>
+      <section class="sec">${secHead("Projects", `<a class="link" href="#projects">All</a>`)}${projects().filter(p => p.status !== "landed").slice(0, 5).map(projMini).join("") || `<p class="empty">No projects yet.</p>`}</section>
+      <section class="sec">${secHead("Flight path", `<a class="link" href="#path">Open</a>`)}${upNext()}</section>
+      <section class="sec" data-drop="day" data-date="">${secHead("Inbox", `<span class="count tc">${inbox.length}</span>`)}${inbox.length ? taskList(inbox.slice(0, 5), { date: false }) + (inbox.length > 5 ? `<a class="link more" href="#tasks">${inbox.length - 5} more in Tasks</a>` : "") : `<p class="empty">Empty. Tasks with no date land here.</p>`}<p class="hint">Drag a task onto the schedule to give it a time.</p></section>
+    </div>`;
+    return h;
+  };
+
+  function homeSchedule() {
+    const d = UI.homeDay, sent = sentIds();
+    G.ensure(d, d);
+    const R = hourRange([d], sent), pph = 46;
+    const x = dayData(d, sent);
+    const isToday = d === J.today();
+    return secHead(isToday ? "Schedule" : J.fmtDate(d, { long: true }),
+      `<div class="daynav"><button type="button" class="ibtn" data-act="homeday" data-step="-1" aria-label="Previous day">${J.icon.left}</button><button type="button" class="link" data-act="homeday" data-step="0">${isToday ? J.relDay(d) : "Back to today"}</button><button type="button" class="ibtn" data-act="homeday" data-step="1" aria-label="Next day">${J.icon.right}</button></div>`) +
+      gcalNote() +
+      (x.allDay.length || x.untimed.length ? `<div class="allday" data-drop="day" data-date="${d}" data-untimed="1">${x.allDay.map(e => `<button type="button" class="ad ev" style="--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${d}">${esc(e.title)}</button>`).join("")}${x.untimed.map(t => `<button type="button" class="ad tk${isDone(t) ? " done" : ""}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}"}' data-drag-label="${esc(short(t.title, 40))}">${esc(t.title)}</button>`).join("")}</div>` : "") +
+      `<div class="tl" data-keep-scroll="home-${d}" id="homeTl"><div class="tl-grid">${hourLabels(R, pph)}${timelineCol(d, R, pph, sent, { cls: "wide" })}</div></div>`;
+  }
+  /* The next seven days from today: how full each one is, and what got done. */
+  function weekBars() {
+    const days = Array.from({ length: 7 }, (_, i) => J.addDays(J.today(), i)), all = allTasks();
+    const data = days.map(d => {
+      const ts = all.filter(t => t.due === d);
+      return { d, plan: ts.reduce((s, t) => s + (t.dur || 0), 0) / 60, done: ts.filter(isDone).reduce((s, t) => s + (t.dur || 0), 0) / 60, n: ts.length };
+    });
+    const max = Math.max(4, ...data.map(x => x.plan));
+    return `<div class="wbars">${data.map(x => `<div class="wb${x.d === J.today() ? " today" : ""}" data-drop="day" data-date="${x.d}" title="${J.fmtDate(x.d)}: ${x.plan.toFixed(1)} h planned, ${x.done.toFixed(1)} h done">` +
+      `<div class="wb-col"><i class="plan" style="height:${x.plan / max * 100}%"></i><i class="done" style="height:${x.done / max * 100}%"></i></div>` +
+      `<span class="wb-d">${J.DAY[J.dow(x.d)].slice(0, 2)}</span><span class="wb-n tc">${x.plan ? x.plan.toFixed(x.plan % 1 ? 1 : 0) : "·"}</span></div>`).join("")}</div>
+      <p class="hint">Outline: hours planned. Filled: hours done. Drop a task on a day to move it there.</p>`;
+  }
+  function fuelText() {
+    const ws = J.weekStart(J.today()), we = J.addDays(ws, 6), goal = S.meta().fuelGoal || 10;
+    const h = allTasks().filter(t => isDone(t) && t.doneAt && J.ymd(new Date(t.doneAt)) >= ws && J.ymd(new Date(t.doneAt)) <= we).reduce((s, t) => s + (t.dur || 0), 0) / 60;
+    return `${h.toFixed(1)} / ${goal} h this week`;
+  }
+  function projMini(p) {
+    const pr = progressOf(p.id), nx = nextTaskOf(p.id);
+    return `<button type="button" class="pmini" data-act="openProject" data-id="${p.id}"><span class="pm-top"><i class="sw" style="--c:${cvar(p.color)}"></i><b>${esc(p.name)}</b><span class="tc">${pr.pct}%</span></span>` +
+      `<span class="bar"><i style="width:${pr.pct}%;background:${cvar(p.color)}"></i></span><span class="pm-next">${nx ? "Next: " + esc(short(nx.title, 44)) : pr.total ? "All done" : "No tasks yet"}</span></button>`;
+  }
+  function upNext() {
+    const today = J.today(), items = pathItems();
+    const now = items.filter(x => x.kind === "period" && x.from <= today && x.to >= today);
+    const next = items.filter(x => (x.kind === "event" ? x.at : x.from) > today).slice(0, 3);
+    const row = (x, isNow) => `<a class="pnext" href="#path" data-act="pathTo" data-id="${x.id}"><span class="tc">${isNow ? "NOW" : "T–" + J.daysUntil(x.kind === "event" ? x.at : x.from)}</span><span><b>${esc(x.title)}${x.estimate ? ' <span class="est" title="Estimated date">≈</span>' : ""}</b><em>${isNow ? periodProgress(x) : esc(fmtSpan(x))}</em></span></a>`;
+    return (now.map(x => row(x, true)).join("") + next.map(x => row(x, false)).join("")) || `<p class="empty">Nothing ahead yet.</p>`;
+  }
+  function emptyWelcome() {
+    return `<section class="welcome"><h2>Jules is empty</h2><p>Your synced space has no data yet. Load the starter data that came with Jules, or start from a blank slate.</p>
+      <div class="row">${window.JULES_SEED ? `<button type="button" class="btn primary" data-act="seed">Load starter data</button>` : ""}<a class="btn" href="#tasks">Start blank</a></div></section>`;
+  }
+
+  /* ---------------- TASKS: everything, as a list or a board ---------------- */
+  V.tasks = () => {
+    const pf = UI.tasksProject;
+    const all = allTasks().filter(t => pf === "all" || (pf === "none" ? !t.project : t.project === pf));
+    const open = all.filter(t => !isDone(t));
+    const tools = tabs("tasksMode", UI.tasksMode, [["list", "List"], ["board", "Board"]]) +
+      `<label class="sel"><span class="sr">Project</span><select data-ctl="tasksProject"><option value="all">All projects</option><option value="none" ${pf === "none" ? "selected" : ""}>No project</option>${projects().map(p => `<option value="${p.id}" ${pf === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>` +
+      `<label class="tog"><input type="checkbox" data-ctl="showDone" ${UI.showDone ? "checked" : ""}><span>Show done</span></label>`;
+    let h = viewHead("Tasks", `${plural(open.length, "open task")}${open.filter(t => t.due && t.due < J.today()).length ? ` · <span class="late">${open.filter(t => t.due && t.due < J.today()).length} overdue</span>` : ""}`, tools);
+    h += quickAdd("tasks", { project: pf !== "all" && pf !== "none" ? pf : "", placeholder: "Add a task… “Essay outline fri 2pm 1h #prep !!”, or just a title for the inbox" });
+    h += UI.tasksMode === "board" ? taskBoard(all) : taskGroups(all);
+    h += `<p class="hint keys">Keys: <kbd>N</kbd> new · <kbd>J</kbd>/<kbd>K</kbd> move · <kbd>X</kbd> done · <kbd>Enter</kbd> open · <kbd>Delete</kbd> remove · <kbd>⌘K</kbd> search</p>`;
+    return h;
+  };
+  function taskGroups(all) {
+    const today = J.today(), open = all.filter(t => !isDone(t));
+    const groups = [];
+    const late = open.filter(t => t.due && t.due < today).sort(byDue);
+    if (late.length) groups.push({ title: "Overdue", cls: "late", ts: late });
+    for (let i = 0; i < 7; i++) {
+      const d = J.addDays(today, i), ts = open.filter(t => t.due === d).sort(byDay);
+      if (ts.length || i < 2) groups.push({ title: i === 0 ? "Today" : i === 1 ? "Tomorrow" : J.DAYL[J.dow(d)], sub: J.fmtDate(d, { noDay: true }), date: d, ts, dateless: true });
+    }
+    const later = open.filter(t => t.due && t.due > J.addDays(today, 6)).sort(byDue);
+    if (later.length) groups.push({ title: "Later", ts: later });
+    groups.push({ title: "No date", sub: "Inbox", date: "", ts: open.filter(t => !t.due).sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.order - b.order), drop: true });
+    if (UI.showDone) groups.push({ title: "Done", sub: "Most recent first", ts: all.filter(isDone).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)).slice(0, 40) });
+    return `<div class="groups">${groups.map(g => {
+      const target = g.date !== undefined ? ` data-drop="day" data-date="${g.date}"` : "";
+      return `<section class="grp ${g.cls || ""}"${target}><h2 class="grp-h"><span>${esc(g.title)}</span>${g.sub ? `<em>${esc(g.sub)}</em>` : ""}<span class="count tc">${g.ts.length || ""}</span></h2>` +
+        (g.ts.length ? taskList(g.ts, { date: !g.dateless }) : `<p class="empty sm">Nothing here. Drag a task in, or add one above.</p>`) + `</section>`;
+    }).join("")}</div>`;
+  }
+  function taskBoard(all) {
+    const cols = [["todo", "To do"], ["doing", "Doing"], ["done", "Done"]];
+    const recent = Date.now() - 14 * 864e5;
+    return `<div class="kanban">${cols.map(([k, l]) => {
+      let ts = all.filter(t => t.status === k);
+      ts = k === "done" ? ts.filter(t => (t.doneAt || 0) > recent).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)) : ts.sort(byDue);
+      return `<section class="bcol" data-drop="status" data-status="${k}"><h2 class="grp-h"><span>${l}</span><span class="count tc">${ts.length}</span></h2>${taskList(ts)}${!ts.length ? `<p class="empty sm">${k === "doing" ? "Drag what you're working on here." : "Empty."}</p>` : ""}</section>`;
+    }).join("")}</div><p class="hint">Done shows the last two weeks. Drag cards between columns.</p>`;
+  }
+
+  /* ---------------- CALENDAR: Google events and your tasks together ---------------- */
+  V.calendar = () => {
+    const narrow = innerWidth < 760;
+    const mode = narrow && UI.calMode === "week" ? "day" : UI.calMode;
+    const d = UI.calDate, ws = J.weekStart(d);
+    let label;
+    if (mode === "week") { const we = J.addDays(ws, 6); label = `${J.parseYmd(ws).getDate()}${ws.slice(5, 7) !== we.slice(5, 7) ? " " + J.MON[+ws.slice(5, 7) - 1] : ""} – ${J.parseYmd(we).getDate()} ${J.MON[+we.slice(5, 7) - 1]} ${we.slice(0, 4)}`; }
+    else if (mode === "month") label = `${J.MONL[+d.slice(5, 7) - 1]} ${d.slice(0, 4)}`;
+    else label = J.fmtDate(d, { long: true, year: true });
+    const tools = `<div class="daynav"><button type="button" class="ibtn" data-act="calstep" data-step="-1" aria-label="Back">${J.icon.left}</button><button type="button" class="btn sm" data-act="calstep" data-step="0">Today</button><button type="button" class="ibtn" data-act="calstep" data-step="1" aria-label="Forward">${J.icon.right}</button></div>` +
+      tabs("calMode", mode, narrow ? [["day", "Day"], ["month", "Month"]] : [["day", "Day"], ["week", "Week"], ["month", "Month"]]) + calFilter();
+    let h = viewHead("Calendar", esc(label), tools) + gcalNote();
+    if (mode === "month") h += calMonth(d);
+    else h += `<div class="cal-wrap">${calTray()}${calWeek(mode === "day" ? [d] : Array.from({ length: 7 }, (_, i) => J.addDays(ws, i)))}</div>`;
+    h += `<p class="hint">Drag tasks from the left onto a time. Drag a block's bottom edge to change its length. Click an empty slot to add a task there. Google events are read-only here: Jules adds to Google only when you press “Send to Google” on a task.</p>`;
+    return h;
+  };
+  function calFilter() {
+    const cals = [...G.calendars.values()];
+    if (!cals.length) return "";
+    return `<details class="calf"><summary class="btn sm">Calendars</summary><div class="calf-menu">${cals.map(c => `<label class="tog"><input type="checkbox" data-cal="${esc(c.id)}" ${G.isHidden(c.id) ? "" : "checked"}><i class="sw" style="--c:var(--c-${c.color})"></i><span>${esc(c.name)}</span></label>`).join("")}<label class="tog"><input type="checkbox" data-calauto ${G.showAuto ? "checked" : ""}><span>Reclaim focus and lunch blocks</span></label></div></details>`;
+  }
+  function calTray() {
+    const today = J.today(), ws = J.weekStart(UI.calDate), we = J.addDays(ws, 6);
+    const open = allTasks().filter(t => !isDone(t) && t.start == null);
+    const thisWeek = open.filter(t => t.due && t.due >= ws && t.due <= we).sort(byDue);
+    const late = open.filter(t => t.due && t.due < today && t.due < ws).sort(byDue);
+    const inbox = open.filter(t => !t.due).sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.order - b.order);
+    return `<aside class="tray" data-drop="unsched" aria-label="Tasks without a time"><h2 class="grp-h"><span>No time yet</span></h2>` +
+      (late.length ? `<p class="lbl late">Overdue</p>${taskList(late.slice(0, 6))}` : "") +
+      (thisWeek.length ? `<p class="lbl">This week</p>${taskList(thisWeek)}` : "") +
+      `<p class="lbl">Inbox</p>${inbox.length ? taskList(inbox.slice(0, 12), { date: false }) : `<p class="empty sm">Empty.</p>`}` +
+      `<p class="hint">Drop a timed task here to clear its time.</p></aside>`;
+  }
+  function calWeek(days) {
+    const sent = sentIds();
+    G.ensure(days[0], days[days.length - 1]);
+    const R = hourRange(days, sent), pph = 48, today = J.today();
+    const head = days.map(d => `<div class="wk-day${d === today ? " today" : ""}${d < today ? " past" : ""}"><span>${J.DAY[J.dow(d)]}</span><b>${J.parseYmd(d).getDate()}</b></div>`).join("");
+    const allDay = days.map(d => {
+      const x = dayData(d, sent);
+      return `<div class="wk-ad" data-drop="day" data-date="${d}" data-untimed="1">${x.allDay.map(e => `<button type="button" class="ad ev" style="--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${d}" title="${esc(e.title)}">${esc(e.title)}</button>`).join("")}` +
+        x.untimed.map(t => `<button type="button" class="ad tk${isDone(t) ? " done" : ""}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}"}' data-drag-label="${esc(short(t.title, 40))}" title="${esc(t.title)}">${esc(t.title)}</button>`).join("") + `</div>`;
+    }).join("");
+    return `<div class="wk" style="--days:${days.length}">
+      <div class="wk-head"><div class="wk-gut"></div>${head}</div>
+      <div class="wk-adrow"><div class="wk-gut lbl">All day</div>${allDay}</div>
+      <div class="wk-body" data-keep-scroll="wk-${days[0]}-${days.length}" id="wkBody"><div class="tl-grid">${hourLabels(R, pph)}${days.map(d => timelineCol(d, R, pph, sent, { cls: d === today ? "today" : "" })).join("")}</div></div>
+    </div>`;
+  }
+  function calMonth(d) {
+    const m0 = J.monthStart(d), start = J.weekStart(m0), sent = sentIds(), today = J.today();
+    const mEnd = J.addDays(J.ymd(new Date(+m0.slice(0, 4), +m0.slice(5, 7), 1)), -1);
+    const weeks = Math.ceil((J.diffDays(start, mEnd) + 1) / 7);
+    G.ensure(start, J.addDays(start, weeks * 7 - 1));
+    let cells = "";
+    for (let i = 0; i < weeks * 7; i++) {
+      const day = J.addDays(start, i), x = dayData(day, sent);
+      const items = [
+        ...x.allDay.map(e => `<button type="button" class="mi ev" style="--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${day}">${esc(e.title)}</button>`),
+        ...x.timed.filter(e => !e.auto).map(e => `<button type="button" class="mi ev" style="--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${day}"><span class="tc">${J.fmtTime(e.segStart)}</span> ${esc(e.title)}</button>`),
+        ...[...x.timedTasks].sort(byDay).concat(x.untimed).map(t => `<button type="button" class="mi tk${isDone(t) ? " done" : ""}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}"}' data-drag-label="${esc(short(t.title, 40))}">${t.start != null ? `<span class="tc">${J.fmtTime(t.start)}</span> ` : ""}${esc(t.title)}</button>`)
+      ];
+      const more = items.length > 4 ? `<button type="button" class="mi more" data-act="gotoDay" data-date="${day}">+${items.length - 3} more</button>` : "";
+      cells += `<div class="mc${day.slice(0, 7) !== m0.slice(0, 7) ? " out" : ""}${day === today ? " today" : ""}" data-drop="day" data-date="${day}">` +
+        `<button type="button" class="mc-n" data-act="gotoDay" data-date="${day}" aria-label="Open ${J.fmtDate(day, { long: true })}">${J.parseYmd(day).getDate()}</button>${(items.length > 4 ? items.slice(0, 3) : items).join("")}${more}</div>`;
+    }
+    return `<div class="month"><div class="mh">${J.DAY.map(x => `<span>${x}</span>`).join("")}</div><div class="mg" style="--weeks:${weeks}">${cells}</div></div>`;
+  }
+
+  /* ---------------- PROJECTS: the body of the rocket ---------------- */
+  V.projects = () => {
+    if (UI.project && project(UI.project)) return projectPage(project(UI.project));
+    UI.project = null;
+    const ps = projects();
+    const groups = [["Active", ps.filter(p => p.status === "burning" || p.status === "fuelling")], ["Paused", ps.filter(p => p.status === "coasting")], ["Landed", ps.filter(p => p.status === "landed")]];
+    let h = viewHead("Projects", "The body of the rocket: everything you're building alongside. Progress is worked out from each project's tasks.", `<button type="button" class="btn primary" data-act="newProject">${J.icon.plus}New project</button>`);
+    groups.forEach(([title, list]) => {
+      if (!list.length) return;
+      h += `<section class="pgroup"><h2 class="grp-h"><span>${title}</span><span class="count tc">${list.length}</span></h2><div class="pgrid">${list.map(projTile).join("")}</div></section>`;
+    });
+    if (!ps.length) h += `<p class="empty">No projects yet. Make one for each thing you're building, studying or chasing; then add tasks to it.</p>`;
+    return h;
+  };
+  function projTile(p) {
+    const pr = progressOf(p.id), nx = nextTaskOf(p.id);
+    return `<button type="button" class="ptile" data-act="openProject" data-id="${p.id}" style="--c:${cvar(p.color)}">
+      <span class="pt-top"><span class="pt-status">${esc(STATUS_SHORT[p.status] || "")}</span><span class="tc pt-pct">${J.pad2(pr.pct)}%</span></span>
+      <b class="pt-name">${esc(p.name)}</b>
+      <span class="bar"><i style="width:${pr.pct}%"></i></span>
+      <span class="pt-meta">${pr.manual ? "No tasks yet" : `${pr.done} of ${pr.total} done`}</span>
+      <span class="pt-next">${nx ? `<em>Next</em>${esc(short(nx.title, 52))}${nx.due ? ` · ${esc(dueLabel(nx))}` : ""}` : ""}</span>
+    </button>`;
+  }
+  function projectPage(p) {
+    const pr = progressOf(p.id), ts = allTasks().filter(t => t.project === p.id);
+    const open = ts.filter(t => !isDone(t)).sort(byDue), done = ts.filter(isDone).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+    return `<a class="back link" href="#projects" data-act="closeProject">${J.icon.left}All projects</a>
+      <header class="pp-head" style="--c:${cvar(p.color)}">
+        <input class="pp-name" id="pp-name" data-keep value="${esc(p.name)}" aria-label="Project name" data-pfield="name" maxlength="60">
+        <div class="pp-ctrl">
+          <label class="sel"><span class="sr">Status</span><select data-pfield="status">${Object.entries(STATUS).map(([k, l]) => `<option value="${k}" ${p.status === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <div class="swatches" role="radiogroup" aria-label="Colour">${COLORS.map(c => `<button type="button" role="radio" aria-checked="${p.color === c}" class="swb" style="--c:${cvar(c)}" data-pcolor="${c}" aria-label="${c}"></button>`).join("")}</div>
+          <button type="button" class="btn danger sm" data-act="delProject">Delete project</button>
+        </div>
+      </header>
+      <div class="pp-prog" style="--c:${cvar(p.color)}"><span class="tc big">${J.pad2(pr.pct)}%</span><span class="bar lg"><i style="width:${pr.pct}%"></i></span>
+        <span class="pp-pm">${pr.manual ? `No tasks yet, so progress is set by hand: <input type="range" min="0" max="100" step="5" value="${pr.pct}" data-pfield="progress" aria-label="Progress">` : `${pr.done} of ${pr.total} tasks done`}</span></div>
+      <div class="pp-grid">
+        <section class="sec">${secHead("Tasks", `<span class="count tc">${open.length} open</span>`)}
+          ${quickAdd("proj-" + p.id, { project: p.id, placeholder: "Add a task to " + p.name + "…" })}
+          ${open.length ? taskList(open, { project: false }) : `<p class="empty">No open tasks. What's the next move?</p>`}
+          ${done.length ? `<details class="donebox"><summary class="lbl">Done · ${done.length}</summary>${taskList(done, { project: false })}</details>` : ""}
+        </section>
+        <section class="sec">${secHead("Notes")}${notesBlock("project:" + p.id, p.notes, v => S.patch("projects", p.id, { notes: v }), "What this project is, what done looks like, links, ideas. Click to write.")}</section>
+      </div>`;
+  }
+
+  /* ---------------- FLIGHT PATH: the command module ---------------- */
+  function pathItems() {
+    return S.list("path").filter(x => (x.kind === "period" ? x.from && x.to : x.at)).sort((a, b) => {
+      const sa = a.kind === "period" ? a.from : a.at, sb = b.kind === "period" ? b.from : b.at;
+      return sa.localeCompare(sb) || (a.kind === "event" ? -1 : 1) || (a.order || 0) - (b.order || 0);
+    });
+  }
+  J.pathItems = pathItems;
+  const startOf = x => x.kind === "period" ? x.from : x.at;
+  const dm = ymd => `${+ymd.slice(8, 10)} ${J.MON[+ymd.slice(5, 7) - 1]}`;
+  function fmtSpan(x) {
+    if (x.kind === "event") return `${dm(x.at)} ${x.at.slice(0, 4)}`;
+    const sameYear = x.from.slice(0, 4) === x.to.slice(0, 4);
+    return `${dm(x.from)}${sameYear ? "" : " " + x.from.slice(0, 4)} – ${dm(x.to)} ${x.to.slice(0, 4)}`;
+  }
+  function periodProgress(x) {
+    const total = J.diffDays(x.from, x.to) + 1, gone = J.diffDays(x.from, J.today()) + 1;
+    const weeks = Math.ceil(total / 7), wk = Math.ceil(gone / 7);
+    return total > 21 ? `Week ${wk} of ${weeks} · ${total - gone} days left` : `Day ${gone} of ${total}`;
+  }
+  const stateOf = x => { const t = J.today(); if (x.kind === "event") return x.at < t ? "past" : x.at === t ? "now" : "future"; return x.to < t ? "past" : x.from <= t ? "now" : "future"; };
+
+  /* The overview strip: the whole flight on one line. Shared with the film. */
+  J.strip = function strip(items, o = {}) {
+    if (!items.length) return "";
+    const y0 = +startOf(items[0]).slice(0, 4);
+    const y1 = Math.max(...items.map(x => +(x.kind === "period" ? x.to : x.at).slice(0, 4)));
+    const n = y1 - y0 + 1;
+    const pos = ymd => { const d = J.parseYmd(ymd), y = d.getFullYear(); const doy = J.diffDays(`${y}-01-01`, ymd), len = J.diffDays(`${y}-01-01`, `${y + 1}-01-01`); return ((y - y0) + doy / len) / n * 100; };
+    const lanes = [];
+    let segs = "", ticks = "";
+    items.forEach(x => {
+      const st = stateOf(x), tip = `${x.title} · ${fmtSpan(x)}${x.estimate ? " (estimated)" : ""}`;
+      if (x.kind === "period") {
+        const a = pos(x.from), b = pos(J.addDays(x.to, 1));
+        let lane = lanes.findIndex(end => end <= a); if (lane < 0) { lane = lanes.length; lanes.push(0); } lanes[lane] = b;
+        segs += `<button type="button" class="sp-seg ${st}${x.estimate ? " est" : ""}" style="left:${a}%;width:${Math.max(.35, b - a)}%;--lane:${Math.min(lane, 2)}" title="${esc(tip)}" data-act="pathTo" data-id="${x.id}"><span class="sr">${esc(tip)}</span></button>`;
+      } else {
+        ticks += `<button type="button" class="sp-tick ${st}${x.goal ? " goal" : ""}" style="left:${pos(x.at)}%" title="${esc(tip)}" data-act="pathTo" data-id="${x.id}"><span class="sr">${esc(tip)}</span></button>`;
+      }
+    });
+    const t = J.today(), nowX = (+t.slice(0, 4) >= y0 && +t.slice(0, 4) <= y1) ? pos(t) : null;
+    return `<div class="strip${o.cls ? " " + o.cls : ""}"><div class="sp-track">${segs}${ticks}${nowX != null ? `<span class="sp-now" style="left:${nowX}%"><em class="tc">NOW</em></span>` : ""}</div>` +
+      `<div class="sp-years">${Array.from({ length: n }, (_, i) => `<button type="button" class="sp-y" data-act="pathYear" data-year="${y0 + i}" style="width:${100 / n}%"><span class="tc">${y0 + i}</span></button>`).join("")}</div></div>`;
+  };
+
+  V.path = () => {
+    const items = pathItems(), today = J.today();
+    const uniStart = (items.find(x => x.kind === "period" && (x.courses || []).length) || {}).from;
+    const uy = uniStart ? +uniStart.slice(0, 4) : null;
+    const yearLabel = y => !uy ? "" : y < uy ? "Before uni" : `Year ${y - uy + 1} at uni`;
+    let h = viewHead("Flight path", "The command module: the whole route, from where you are to the degree. Dates marked ≈ are estimates; check them when they're confirmed.",
+      `<button type="button" class="btn" data-act="addPath" data-kind="event">${J.icon.plus}Milestone</button><button type="button" class="btn" data-act="addPath" data-kind="period">${J.icon.plus}Term or period</button>`);
+    h += `<section class="overview">${J.strip(items)}<p class="hint">The whole flight on one line. Click a year or a mark to jump to it.</p></section>`;
+
+    const years = {};
+    items.forEach(x => { const y = startOf(x).slice(0, 4); (years[y] = years[y] || []).push(x); });
+    let nowPlaced = false;
+    h += `<div class="tline">`;
+    Object.keys(years).sort().forEach(y => {
+      h += `<section class="ty" id="year-${y}"><h2 class="ty-h"><span class="tc">${y}</span><em>${esc(yearLabel(+y))}</em></h2><ol class="ty-list">`;
+      years[y].forEach(x => {
+        if (!nowPlaced && startOf(x) > today) { nowPlaced = true; h += nowRow(); }
+        h += pathRow(x);
+      });
+      h += `</ol></section>`;
+    });
+    if (!nowPlaced && items.length) h += `<ol class="ty-list">${nowRow()}</ol>`;
+    h += `</div>`;
+    if (!items.length) h += `<p class="empty">Nothing on the flight path yet. Add terms, exams, trips and big milestones.</p>`;
+
+    /* the star: skills */
+    const skills = S.list("skills");
+    h += `<section class="star-sec" id="path-star"><div class="shead"><h2><span class="eyebrow-s">The star</span>Skills you're flying toward</h2><button type="button" class="btn" data-act="addSkill">${J.icon.plus}Skill</button></div>
+      <ol class="skills">${skills.map((s, i) => `<li class="skill${s.goal ? " goal" : ""}"><span class="tc sk-eta">${esc(s.eta)}</span><div><b>${esc(s.name)}</b>${s.detail ? `<em>${esc(s.detail)}</em>` : ""}${s.why ? `<p>${esc(s.why)}</p>` : ""}</div>
+        <span class="rowtools"><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${J.icon.up}</button><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="1" aria-label="Move down" ${i === skills.length - 1 ? "disabled" : ""}>${J.icon.down}</button><button type="button" class="ibtn" data-act="editSkill" data-id="${s.id}" aria-label="Edit ${esc(s.name)}">${J.icon.edit}</button></span></li>`).join("") || `<li class="empty">No skills yet.</li>`}</ol></section>`;
+    return h;
+  };
+  function nowRow() { return `<li class="tr now-row" id="path-now"><span class="tr-date tc">${esc(J.fmtDate(J.today(), { noDay: true }))}</span><span class="tr-mark"></span><span class="tr-body"><b class="tc">NOW</b></span></li>`; }
+  function pathRow(x) {
+    const st = stateOf(x);
+    const courses = (x.courses || []).map(c => `<button type="button" class="course${UI.openCourse === x.id + c.code ? " on" : ""}" data-act="course" data-key="${esc(x.id + c.code)}" aria-expanded="${UI.openCourse === x.id + c.code}">${esc(c.code)}</button>`).join("");
+    const open = (x.courses || []).find(c => UI.openCourse === x.id + c.code);
+    const existing = open && projects().find(p => p.name.startsWith(open.code));
+    return `<li class="tr ${x.kind} ${st}${x.goal ? " goal" : ""}" id="path-${x.id}">
+      <span class="tr-date">${esc(fmtSpan(x))}${x.estimate ? ' <span class="est" title="Estimated">≈</span>' : ""}</span>
+      <span class="tr-mark"></span>
+      <div class="tr-body"><b>${esc(x.title)}</b>${st === "now" && x.kind === "period" ? `<span class="tr-now">${periodProgress(x)}</span>` : ""}${x.sub ? `<em>${esc(x.sub)}</em>` : ""}
+        ${courses ? `<div class="courses">${courses}</div>` : ""}
+        ${open ? `<div class="course-d"><b class="tc">${esc(open.code)}</b> ${esc(open.name || "")}<span class="row">${existing ? `<button type="button" class="link" data-act="openProject" data-id="${existing.id}">Open its project</button>` : `<button type="button" class="link" data-act="courseProject" data-code="${esc(open.code)}" data-name="${esc(open.name || "")}">Start a project for notes and homework</button>`}</span></div>` : ""}
+      </div>
+      <span class="rowtools"><button type="button" class="ibtn" data-act="editPath" data-id="${x.id}" aria-label="Edit ${esc(x.title)}">${J.icon.edit}</button></span>
+    </li>`;
+  }
+
+  /* ---------------- LOG: the exhaust ---------------- */
+  V.log = () => {
+    const entries = S.list("log");
+    const groups = [];
+    entries.forEach(e => { let g = groups.find(x => x.name === e.group); if (!g) groups.push(g = { name: e.group, items: [] }); g.items.push(e); });
+    let h = viewHead("Flight log", "The exhaust: everything already burned. It doubles as the raw material for your CV.",
+      `<button type="button" class="btn" data-act="copyCV">${J.icon.copy}Copy as CV text</button><button type="button" class="btn primary" data-act="addLog">${J.icon.plus}Entry</button>`);
+    h += burnHistory();
+    groups.forEach(g => {
+      h += `<section class="lgroup"><h2 class="grp-h"><span>${esc(g.name)}</span><span class="count tc">${g.items.length}</span></h2><ol class="logl">` +
+        g.items.map((e, i) => `<li class="le"><span class="tc le-when">${esc(e.when)}</span><div><b>${esc(e.title)}</b>${e.detail ? `<em>${esc(e.detail)}</em>` : ""}</div>
+          <span class="rowtools always"><button type="button" class="ibtn${e.highlight ? " on" : ""}" data-act="hlLog" data-id="${e.id}" aria-pressed="${!!e.highlight}" title="${e.highlight ? "Shown in the film" : "Show in the film"}" aria-label="Highlight">${J.icon.star}</button>
+          <button type="button" class="ibtn" data-act="moveLog" data-id="${e.id}" data-dir="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${J.icon.up}</button><button type="button" class="ibtn" data-act="moveLog" data-id="${e.id}" data-dir="1" aria-label="Move down" ${i === g.items.length - 1 ? "disabled" : ""}>${J.icon.down}</button>
+          <button type="button" class="ibtn" data-act="editLog" data-id="${e.id}" aria-label="Edit ${esc(e.title)}">${J.icon.edit}</button></span></li>`).join("") + `</ol></section>`;
+    });
+    if (!entries.length) h += `<p class="empty">Nothing logged yet. Add results, awards, roles, competitions and projects as they happen.</p>`;
+    return h;
+  };
+  function burnHistory() {
+    const days = [];
+    const done = allTasks().filter(t => isDone(t) && t.doneAt);
+    for (let i = 0; i < 14; i++) {
+      const d = J.addDays(J.today(), -i), ts = done.filter(t => J.ymd(new Date(t.doneAt)) === d);
+      if (ts.length) days.push({ d, ts });
+    }
+    const total = days.reduce((s, x) => s + x.ts.length, 0), hrs = days.reduce((s, x) => s + x.ts.reduce((a, t) => a + (t.dur || 0), 0), 0) / 60;
+    return `<section class="burns"><h2 class="grp-h"><span>Recent burns</span><em>Tasks finished in the last two weeks</em><span class="count tc">${total ? `${total} · ${hrs.toFixed(1)} h` : ""}</span></h2>` +
+      (days.length ? days.map((x, i) => `<details class="bday" ${i === 0 ? "open" : ""}><summary><span>${esc(J.relDay(x.d) === "Today" || J.relDay(x.d) === "Yesterday" ? J.relDay(x.d) : J.fmtDate(x.d))}</span><span class="tc">${x.ts.length} · ${(x.ts.reduce((a, t) => a + (t.dur || 0), 0) / 60).toFixed(1)} h</span></summary>${taskList(x.ts)}</details>`).join("") : `<p class="empty sm">Nothing finished yet in the last two weeks. Tick a task and it shows up here.</p>`) + `</section>`;
+  }
+  function cvText() {
+    const groups = {};
+    S.list("log").forEach(e => { (groups[e.group] = groups[e.group] || []).push(e); });
+    return Object.entries(groups).map(([g, es]) => g.toUpperCase() + "\n" + es.map(e => `${e.when ? e.when + "  " : ""}${e.title}${e.detail ? " — " + e.detail : ""}`).join("\n")).join("\n\n");
+  }
+
+  /* ======================================================================
+     5. EDITORS, SETTINGS, PALETTE, KEYBOARD
+     ====================================================================== */
+
+  /* ---------------- the task editor drawer ---------------- */
+  const TD = J.taskDrawer = (() => {
+    let id = null;
+    const el = () => $("#drawer");
+    function googleBlock(t) {
+      const can = G.state !== "unavailable";
+      if (!can) return `<p class="dw-note">Send to Google works when Jules is opened in claude.ai with the Notion connector.</p>`;
+      if (t.gcal) {
+        const changed = t.gcal.due !== t.due || t.gcal.start !== t.start || (t.start != null && t.gcal.dur !== (t.dur || 30));
+        return `<p class="dw-text">In Google Calendar since ${esc(J.fmtDate(J.ymd(new Date(t.gcal.sentAt))))}.${t.gcal.url ? ` <a class="link" href="${esc(t.gcal.url)}" target="_blank" rel="noopener noreferrer">Open ${J.icon.ext}</a>` : ""}</p>` +
+          (changed ? `<p class="dw-note warn">You've changed the time since sending. Google still has the old one: edit it there, or send a new copy and delete the old one in Google.</p><button type="button" class="btn sm" data-dact="gsend">Send a new copy</button>` : "");
+      }
+      if (!t.due) return `<p class="dw-note">Give the task a date (and ideally a time) to send it.</p>`;
+      return `<button type="button" class="btn" data-dact="gsend">Send to Google</button><p class="dw-note">Adds one event to your primary Google calendar${t.start == null ? " as an all-day event" : ` at ${J.fmtRange(t.start, t.dur || 30)}`}${t.repeat ? ". Only this occurrence is sent" : ""}. Jules never edits or deletes Google events.</p>`;
+    }
+    function render(focusTitle) {
+      const t = S.get("tasks", id), box = el();
+      if (!t) { close(); return; }
+      const durOpts = [["", "None"], ...DURS.map(d => [d, J.fmtDur(d)])];
+      if (t.dur && !DURS.includes(t.dur)) durOpts.push([t.dur, J.fmtDur(t.dur)]);
+      box.innerHTML = `<div class="dw-scrim" data-dact="close"></div><div class="dw-panel" role="dialog" aria-modal="true" aria-label="Edit task">
+        <header class="dw-head"><span class="eyebrow-s">Task${t.repeat ? " · " + esc(J.REPEAT_LABEL[t.repeat]) : ""}</span><button type="button" class="ibtn" data-dact="close" aria-label="Close (Esc)">${J.icon.close}</button></header>
+        <textarea class="dw-title" id="dwTitle" rows="1" maxlength="200" placeholder="What needs doing?">${esc(t.title)}</textarea>
+        <div class="seg" role="radiogroup" aria-label="Status">${[["todo", "To do"], ["doing", "Doing"], ["done", "Done"]].map(([k, l]) => `<button type="button" role="radio" aria-checked="${t.status === k}" data-dact="status" data-val="${k}">${l}</button>`).join("")}</div>
+        <div class="fgrid two">
+          <label class="frow"><span class="fl">Date</span><input type="date" id="dwDue" value="${t.due || ""}"></label>
+          <label class="frow"><span class="fl">Time</span><input type="time" id="dwStart" step="300" value="${t.start != null ? J.fmtTime(t.start) : ""}"></label>
+          <div class="frow full quick">${[["Today", J.today()], ["Tomorrow", J.addDays(J.today(), 1)], ["Next week", J.addDays(J.weekStart(J.today()), 7)], ["No date", ""]].map(([l, v]) => `<button type="button" class="link" data-dact="due" data-val="${v}">${l}</button>`).join("")}</div>
+          <label class="frow"><span class="fl">Duration</span><select id="dwDur">${durOpts.map(([v, l]) => `<option value="${v}" ${String(t.dur || "") === String(v) ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <label class="frow"><span class="fl">Repeat</span><select id="dwRepeat">${[["", "Never"], ["daily", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"]].map(([v, l]) => `<option value="${v}" ${String(t.repeat || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+          <label class="frow"><span class="fl">Project</span><select id="dwProject"><option value="">None</option>${projects().map(p => `<option value="${p.id}" ${t.project === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}<option value="__new">New project…</option></select></label>
+          <div class="frow"><span class="fl">Priority</span><div class="seg sm" role="radiogroup" aria-label="Priority">${["None", "Low", "Med", "High"].map((l, i) => `<button type="button" role="radio" aria-checked="${(t.priority || 0) === i}" data-dact="prio" data-val="${i}">${l}</button>`).join("")}</div></div>
+          <div class="frow full newproj" hidden><span class="fl">New project name</span><span class="inl"><input type="text" id="dwNewProj" maxlength="60" placeholder="e.g. MATH1131"><button type="button" class="btn sm" data-dact="mkproj">Create</button></span></div>
+        </div>
+        <div class="frow full"><span class="fl">Notes</span>${notesBlock("task:" + t.id, t.notes, v => A.update(t.id, { notes: v }), "Steps, links, details. Click to write.")}</div>
+        <section class="dw-g"><span class="fl">Google Calendar</span><div id="dwGoogle">${googleBlock(t)}</div></section>
+        <footer class="dw-foot"><span class="dw-meta">Added ${esc(J.fmtDate(J.ymd(new Date(t.createdAt || Date.now()))))}${t.doneAt ? " · done " + esc(J.fmtDate(J.ymd(new Date(t.doneAt)))) : ""}</span><button type="button" class="btn danger sm" data-dact="delete">Delete</button></footer>
+      </div>`;
+      const ti = $("#dwTitle", box);
+      autoGrowTitle(ti);
+      if (focusTitle) setTimeout(() => { ti.focus(); ti.setSelectionRange(ti.value.length, ti.value.length); }, 80);
+    }
+    const autoGrowTitle = ta => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
+    const saveTitle = J.debounce(v => { if (id) A.update(id, { title: v.replace(/\s+/g, " ").trim() }); }, 250);
+
+    function open(taskId, o = {}) {
+      const box = el();
+      id = taskId;
+      render(o.focusTitle);
+      box.hidden = false;
+      requestAnimationFrame(() => box.classList.add("open"));
+      J.overlay.push("drawer", close);
+    }
+    function close() {
+      const box = el();
+      if (!id) return;
+      const ti = $("#dwTitle", box);
+      const t = S.get("tasks", id);
+      if (t && ti) {
+        const v = ti.value.replace(/\s+/g, " ").trim();
+        if (!v) S.remove("tasks", id); else if (v !== t.title) A.update(id, { title: v });
+      }
+      id = null;
+      box.classList.remove("open");
+      setTimeout(() => { if (!box.classList.contains("open")) { box.hidden = true; box.innerHTML = ""; } }, 260);
+      J.overlay.pop("drawer");
+    }
+
+    document.addEventListener("input", e => {
+      if (!id) return;
+      if (e.target.id === "dwTitle") { autoGrowTitle(e.target); saveTitle(e.target.value); }
+    });
+    document.addEventListener("keydown", e => { if (id && e.target.id === "dwTitle" && e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
+    document.addEventListener("change", e => {
+      if (!id) return;
+      const t = S.get("tasks", id); if (!t) return;
+      const v = e.target.value;
+      if (e.target.id === "dwDue") A.update(id, v ? { due: v } : { due: null, start: null });
+      else if (e.target.id === "dwStart") A.update(id, v ? { start: J.parseHM(v), due: t.due || J.today(), dur: t.dur || 60 } : { start: null });
+      else if (e.target.id === "dwDur") A.update(id, { dur: v ? +v : null });
+      else if (e.target.id === "dwRepeat") A.update(id, { repeat: v || null, due: v && !t.due ? J.today() : t.due });
+      else if (e.target.id === "dwProject") {
+        if (v === "__new") { $(".newproj", el()).hidden = false; $("#dwNewProj").focus(); }
+        else A.update(id, { project: v || null });
+      }
+    });
+    document.addEventListener("click", async e => {
+      const b = e.target.closest("[data-dact]");
+      if (!b || !id || !el().contains(b)) return;
+      const t = S.get("tasks", id), act = b.dataset.dact;
+      if (act === "close") close();
+      else if (act === "status") A.setStatus(id, b.dataset.val);
+      else if (act === "prio") A.update(id, { priority: +b.dataset.val });
+      else if (act === "due") A.update(id, b.dataset.val ? { due: b.dataset.val } : { due: null, start: null });
+      else if (act === "mkproj") { const n = $("#dwNewProj").value.trim(); if (!n) return; const p = A.newProject(n); A.update(id, { project: p.id }); }
+      else if (act === "delete") { if (b.dataset.armed) { const tid = id; close(); A.remove(tid); } else { b.dataset.armed = "1"; b.textContent = "Click again to delete"; } }
+      else if (act === "gsend") {
+        const box = $("#dwGoogle");
+        b.disabled = true; b.textContent = "Sending…";
+        try {
+          const res = await G.sendTask(t, (project(t.project) || {}).name);
+          A.update(t.id, { gcal: res });
+          J.toast("Sent to Google Calendar");
+        } catch (err) {
+          const code = err && err.code;
+          const msg = {
+            approval_required: "Jules needs your OK to add events. Press the button again and allow it when claude.ai asks.",
+            needs_reauth: "Your Notion connection has lapsed. Reconnect Notion in claude.ai Settings → Connectors, then try again.",
+            server_not_connected: "Add the Notion connector in claude.ai Settings → Connectors first.",
+            not_in_manifest: "Adding events is switched off for Jules in this view.",
+            no_date: "Give the task a date first.",
+            unavailable: "Google Calendar only works when Jules is opened in claude.ai."
+          }[code] || (code === "server_unavailable" || code === "upstream_error" || code === "tool_error"
+            ? "Not sure it went through. Check Google Calendar before sending again, so you don't get a duplicate." + (err.message ? ` (${String(err.message).slice(0, 120)})` : "")
+            : "Couldn't send it" + (err && err.message ? ": " + String(err.message).slice(0, 120) : "."));
+          if (box) box.insertAdjacentHTML("beforeend", `<p class="dw-note warn">${esc(msg)}</p>`);
+          b.disabled = false; b.textContent = "Send to Google";
         }
       }
-      s.shows.forEach(o => layerStyle(o, p));
-      s.words.forEach(w => {
-        const n = w.spans.length, span = (w.b - w.a) / n;
-        w.spans.forEach((el, i) => { el.style.opacity = (.16 + .84 * ramp(p, w.a + span * i, w.a + span * (i + 1.4))).toFixed(3); });
-      });
-      if (s.id === "rocket") updateRocket(p);
-      if (s.id === "command") updateBoard(p);
-      if (s.id === "star") route.style.strokeDashoffset = (routeLen * (1 - ramp(p, .3, .8))).toFixed(1);
     });
-    snap = false;
-    if (!reduced) requestAnimationFrame(frame);
+    /* Keep the drawer in step with changes made elsewhere (but never while you're typing in it). */
+    S.on(cols => {
+      if (!id || !cols.has("tasks") && !cols.has("projects")) return;
+      if (!S.get("tasks", id)) { close(); return; }
+      const a = document.activeElement;
+      if (a && el().contains(a) && a.matches("input, textarea, select")) return;
+      render(false);
+    });
+    G.on(() => { if (id && $("#dwGoogle")) $("#dwGoogle").innerHTML = googleBlock(S.get("tasks", id)); });
+    return { open, close, isOpen: () => !!id, current: () => id };
+  })();
+
+  /* ---------------- forms for the other record types ---------------- */
+  function editPath(item, kind) {
+    const isNew = !item;
+    const x = item || { kind: kind || "event", title: "", sub: "", from: J.today(), to: J.addDays(J.today(), 30), at: J.today(), courses: [], estimate: false, goal: false };
+    const fields = [
+      { key: "kind", label: "Type", type: "select", options: [["event", "Milestone (one day)"], ["period", "Period (term, semester, trip…)"]] },
+      { key: "title", label: "Title", placeholder: "Term 1, exam results, a trip…" },
+      { key: "sub", label: "Detail", placeholder: "Optional one-liner" },
+      { key: "at", label: "Date (milestone)", type: "date" },
+      { key: "from", label: "Starts (period)", type: "date" },
+      { key: "to", label: "Ends (period)", type: "date" },
+      { key: "courses", label: "Courses", type: "lines", rows: 4, placeholder: "MATH1131 Mathematics 1A\nPHYS1121 Physics 1A", hint: "One per line: the code, a space, then the name.", toLine: c => `${c.code} ${c.name || ""}`.trim(), fromLine: l => { const [code, ...r] = l.split(/\s+/); return { code: code.toUpperCase(), name: r.join(" ") }; } },
+      { key: "estimate", label: "This date is an estimate (shows ≈)", type: "check" },
+      { key: "goal", label: "This is a goal (marked at the end of the flight)", type: "check" }
+    ];
+    J.form.open({
+      eyebrow: "Flight path", title: isNew ? "Add to the flight path" : "Edit " + x.title, fields, value: x,
+      onOpen(box) {
+        const sync = () => { const k = $("#ff-kind", box).value; ["at"].forEach(f => $("#ff-" + f, box).closest(".frow").hidden = k !== "event"); ["from", "to", "courses"].forEach(f => $("#ff-" + f, box).closest(".frow").hidden = k !== "period"); };
+        $("#ff-kind", box).addEventListener("change", sync); sync();
+      },
+      validate(v) {
+        if (!v.title.trim()) return "Give it a title.";
+        if (v.kind === "event" && !J.isValidYmd(v.at)) return "Pick a date.";
+        if (v.kind === "period" && (!J.isValidYmd(v.from) || !J.isValidYmd(v.to))) return "Pick both dates.";
+        if (v.kind === "period" && v.to < v.from) return "The end is before the start.";
+        return "";
+      },
+      onSave(v) {
+        const rec = Object.assign({}, v, { title: v.title.trim(), sub: (v.sub || "").trim() });
+        if (rec.kind === "event") { rec.from = null; rec.to = null; rec.courses = []; } else rec.at = null;
+        if (isNew) { rec.id = J.uid("m"); rec.order = S.nextOrder("path"); }
+        S.put("path", rec);
+        J.toast(isNew ? "Added to the flight path" : "Saved");
+      },
+      onDelete: isNew ? null : () => { S.remove("path", x.id); J.toast(`Removed “${short(x.title, 30)}”`, { label: "Undo", run: () => S.put("path", x) }); }
+    });
   }
-  function relayout() { renderCluster(); layoutRoute(); layoutBoard(); if (reduced) frame(performance.now()); }
-  addEventListener("resize", relayout);
-  if (reduced) addEventListener("scroll", () => frame(performance.now()), { passive: true });
-  layoutRoute(); layoutBoard();
-  syncPage();
-  requestAnimationFrame(frame);
-  if (reduced) Promise.all(scenes.filter(s => s.r).map(s => s.r.setSource(s.vars[s.vi]).catch(() => {}))).then(() => frame(performance.now()));
+  function editSkill(s) {
+    const isNew = !s;
+    J.form.open({
+      eyebrow: "The star", title: isNew ? "Add a skill" : "Edit " + s.name, value: s || { name: "", detail: "", eta: "", why: "", goal: false },
+      fields: [{ key: "name", label: "Skill", placeholder: "CAD fluency" }, { key: "detail", label: "How you'll get it", placeholder: "Onshape tutorials, then MMAN1130" }, { key: "eta", label: "How far out", placeholder: "~3 months, Term 1, Year 3…" }, { key: "why", label: "Why it matters", type: "textarea", rows: 3 }, { key: "goal", label: "This is the end goal", type: "check" }],
+      validate: v => v.name.trim() ? "" : "Name the skill.",
+      onSave(v) { S.put("skills", Object.assign({}, v, isNew ? { id: J.uid("s"), order: S.nextOrder("skills") } : {})); },
+      onDelete: isNew ? null : () => { S.remove("skills", s.id); J.toast(`Removed “${short(s.name, 30)}”`, { label: "Undo", run: () => S.put("skills", s) }); }
+    });
+  }
+  function editLog(e) {
+    const isNew = !e, groups = [...new Set(S.list("log").map(x => x.group))];
+    J.form.open({
+      eyebrow: "Flight log", title: isNew ? "Log an achievement" : "Edit entry", value: e || { group: groups[0] || "Academic", when: String(new Date().getFullYear()), title: "", detail: "", highlight: false },
+      fields: [{ key: "title", label: "What", placeholder: "Won a design competition" }, { key: "detail", label: "Detail", placeholder: "Where, with whom, the result" }, { key: "when", label: "When", placeholder: "2026, or 3 yrs, or Ongoing" },
+        { key: "group", label: "Group", placeholder: "Academic", hint: groups.length ? "Existing: " + groups.join(", ") : "" }, { key: "highlight", label: "Show it in the film", type: "check" }],
+      validate: v => v.title.trim() ? "" : "Say what it was.",
+      onSave(v) { v.group = (v.group || "Other").trim(); S.put("log", Object.assign({}, v, isNew ? { id: J.uid("l"), order: S.nextOrder("log") } : {})); },
+      onDelete: isNew ? null : () => { S.remove("log", e.id); J.toast(`Removed “${short(e.title, 30)}”`, { label: "Undo", run: () => S.put("log", e) }); }
+    });
+  }
+  function openSettings() {
+    const m = S.meta();
+    J.form.open({
+      eyebrow: "Settings", title: "Jules", value: m,
+      note: S.mode === "db" ? "Everything syncs through this artifact's private storage in claude.ai." : "Everything is saved in this browser only. Open Jules in claude.ai to sync across devices.",
+      fields: [
+        { key: "name", label: "Your name", placeholder: "For the greeting" },
+        { key: "fuelGoal", label: "Weekly goal (hours of tasks done)", type: "number", attrs: 'min="1" max="80" step="1"' },
+        { key: "countdowns", label: "Countdowns", type: "lines", rows: 4, placeholder: "2027-02-15 Term 1", hint: "One per line: the date (YYYY-MM-DD), a space, then the label. Past ones hide themselves.",
+          toLine: c => `${c.date} ${c.label}`, fromLine: l => { const [date, ...r] = l.split(/\s+/); return { date, label: r.join(" ") || "Countdown" }; } },
+        { key: "backup", label: "Backup", type: "html", html: `<div class="row"><button type="button" class="btn sm" id="bkCopy">${J.icon.copy}Copy everything as text</button><button type="button" class="btn sm" id="bkRestore">Restore from a copy…</button></div><p class="fh">Paste the copy somewhere safe (a note, an email to yourself) now and then.</p>` }
+      ],
+      validate(v) { const bad = (v.countdowns || []).find(c => !J.isValidYmd(c.date)); return bad ? `“${bad.date}” isn't a date. Use YYYY-MM-DD.` : ""; },
+      onSave(v) { S.put("meta", { id: "app", name: (v.name || "").trim(), fuelGoal: Math.max(1, +v.fuelGoal || 10), countdowns: v.countdowns }); J.toast("Settings saved"); },
+      onOpen(box) {
+        $("#bkCopy", box).addEventListener("click", async () => {
+          const data = { app: "Jules", version: 5, at: new Date().toISOString() };
+          ["tasks", "projects", "path", "skills", "log", "meta"].forEach(c => { data[c] = S.list(c); });
+          const ok = await J.copyText(JSON.stringify(data));
+          J.toast(ok ? "Copied. Paste it somewhere safe." : "Your browser blocked copying here.");
+        });
+        $("#bkRestore", box).addEventListener("click", () => setTimeout(restoreForm, 280));
+      }
+    });
+  }
+  function restoreForm() {
+    J.form.open({
+      eyebrow: "Settings", title: "Restore from a copy", value: { text: "" }, saveLabel: "Restore",
+      note: "Paste a copy made with “Copy everything as text”. Records with the same id are replaced; nothing else is deleted.",
+      fields: [{ key: "text", label: "Copy", type: "textarea", rows: 8 }],
+      validate(v) { try { const d = JSON.parse(v.text); return d && d.app === "Jules" ? "" : "That doesn't look like a Jules copy."; } catch (e) { return "That isn't valid. Paste the whole copy."; } },
+      onSave(v) { const d = JSON.parse(v.text); let n = 0; ["tasks", "projects", "path", "skills", "log", "meta"].forEach(c => (d[c] || []).forEach(r => { if (r && r.id) { S.put(c, r); n++; } })); J.toast(`Restored ${n} records`); }
+    });
+  }
+  function showKeys() {
+    const rows = [["1 – 6", "Home, Tasks, Calendar, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["Esc", "Close whatever's open"]];
+    J.form.open({ eyebrow: "Help", title: "Keyboard", value: {}, fields: [{ key: "k", type: "html", label: "", html: `<dl class="keys-dl">${rows.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join("")}</dl><p class="fh">Quick add understands: today, tomorrow, mon–sun, next week, 23 nov, 9am, 14:00, 9-11am, 1h, 90m, #project, !, !!, !!!, daily, weekdays, every fri.</p>` }] });
+  }
+
+  /* ---------------- command palette ---------------- */
+  const PAL = (() => {
+    let items = [], sel = 0;
+    const box = () => $("#palette");
+    function compute(q) {
+      const out = [];
+      const r = q.trim() ? J.parseQuick(q, { projects: projects() }) : null;
+      out.push({ group: "Do", label: q.trim() ? `New task: ${r.title || q}` : "New task", hint: r && r.tokens.length ? r.tokens.map(t => t.label).join(" · ") : "N", run: () => { if (q.trim()) { const t = A.fromText(q); if (t) J.toast(`Added “${short(t.title, 30)}”`); } else focusQuickAdd(); } });
+      const cmds = [
+        ...ORDER.map(v => ({ label: "Go to " + VIEWS_META[v].label, hint: VIEWS_META[v].key, run: () => go(v) })),
+        { label: "Launch the film", hint: "F", run: () => J.warp(() => go("film")) },
+        { label: "New project", run: () => { const p = A.newProject("New project"); go("projects"); openProject(p.id, true); } },
+        { label: "Add a milestone to the flight path", run: () => { go("path"); editPath(null, "event"); } },
+        { label: "Log an achievement", run: () => { go("log"); editLog(null); } },
+        { label: "Settings and countdowns", run: openSettings },
+        { label: "Keyboard shortcuts", hint: "?", run: showKeys }
+      ];
+      cmds.forEach(c => { const s = J.fuzzy(q, c.label); if (s) out.push(Object.assign({ group: "Go", score: s }, c)); });
+      if (q.trim()) {
+        const hits = [];
+        allTasks().forEach(t => { const s = J.fuzzy(q, t.title); if (s) hits.push({ group: "Tasks", score: s + (isDone(t) ? -30 : 0), label: t.title, hint: [isDone(t) ? "Done" : dueLabel(t), (project(t.project) || {}).name].filter(Boolean).join(" · "), run: () => { go(UI.view === "film" ? "tasks" : UI.view); TD.open(t.id); } }); });
+        projects().forEach(p => { const s = J.fuzzy(q, p.name); if (s) hits.push({ group: "Projects", score: s + 10, label: p.name, hint: progressOf(p.id).pct + "%", run: () => { go("projects"); openProject(p.id); } }); });
+        S.list("path").forEach(x => { const s = J.fuzzy(q, x.title + " " + (x.courses || []).map(c => c.code + " " + c.name).join(" ")); if (s) hits.push({ group: "Flight path", score: s, label: x.title, hint: fmtSpan(Object.assign({}, x)), run: () => { go("path"); setTimeout(() => scrollToPath(x.id), 60); } }); });
+        S.list("log").forEach(e => { const s = J.fuzzy(q, e.title + " " + e.detail); if (s) hits.push({ group: "Flight log", score: s, label: e.title, hint: e.when, run: () => go("log") }); });
+        hits.sort((a, b) => b.score - a.score);
+        out.push(...hits.slice(0, 12));
+      }
+      return out.filter((x, i) => i === 0 || x.group !== "Go" || x.score > (q.trim() ? 2 : 0)).slice(0, 18);
+    }
+    function draw() {
+      const ul = $("#palList");
+      let lastGroup = "";
+      ul.innerHTML = items.map((it, i) => {
+        const g = it.group !== lastGroup ? `<li class="pg" role="presentation">${esc(it.group)}</li>` : "";
+        lastGroup = it.group;
+        return g + `<li role="option" id="pal-${i}" aria-selected="${i === sel}" data-i="${i}"><span>${esc(it.label)}</span>${it.hint ? `<em>${esc(it.hint)}</em>` : ""}</li>`;
+      }).join("");
+      $("#palIn").setAttribute("aria-activedescendant", "pal-" + sel);
+      const cur = $("#pal-" + sel); if (cur) cur.scrollIntoView({ block: "nearest" });
+    }
+    function open(q = "") {
+      const b = box();
+      b.hidden = false;
+      requestAnimationFrame(() => b.classList.add("open"));
+      const inp = $("#palIn");
+      inp.value = q; items = compute(q); sel = 0; draw();
+      setTimeout(() => inp.focus(), 30);
+      J.overlay.push("palette", close);
+    }
+    function close() { const b = box(); if (b.hidden) return; b.classList.remove("open"); setTimeout(() => { b.hidden = true; }, 180); J.overlay.pop("palette"); }
+    function run(i) { const it = items[i]; if (!it) return; close(); setTimeout(() => it.run(), 10); }
+    document.addEventListener("input", e => { if (e.target.id === "palIn") { items = compute(e.target.value); sel = 0; draw(); } });
+    document.addEventListener("keydown", e => {
+      if (e.target.id !== "palIn") return;
+      if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); draw(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); }
+      else if (e.key === "Enter") { e.preventDefault(); run(sel); }
+    });
+    document.addEventListener("click", e => {
+      const b = box(); if (b.hidden) return;
+      const li = e.target.closest("#palList [data-i]");
+      if (li) run(+li.dataset.i);
+      else if (e.target === b || e.target.classList.contains("pal-scrim")) close();
+    });
+    return { open, close };
+  })();
+
+  function focusQuickAdd() {
+    if (!["home", "tasks"].includes(UI.view) && !(UI.view === "projects" && UI.project)) go("tasks");
+    setTimeout(() => { const q = $("#view .qa-in"); if (q) { q.focus(); q.scrollIntoView({ block: "center", behavior: "smooth" }); } }, 40);
+  }
+  function openProject(pid, focusName) {
+    UI.project = pid;
+    if (UI.view !== "projects") go("projects"); else render();
+    scrollTo(0, 0);
+    if (focusName) setTimeout(() => { const n = $("#pp-name"); if (n) { n.focus(); n.select(); } }, 60);
+  }
+  function scrollToPath(pid) {
+    const el = document.getElementById("path-" + pid);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  }
+
+  /* ---------------- clicks inside views ---------------- */
+  document.addEventListener("click", e => {
+    if (!e.target.closest("#app")) return;
+    const a = e.target.closest("[data-act]");
+    if (a) {
+      const act = a.dataset.act, id = a.dataset.id;
+      switch (act) {
+        case "toggle": e.stopPropagation(); A.toggle(id); return;
+        case "settings": openSettings(); return;
+        case "hero": UI.hero = (UI.hero + 1) % HERO.length; lsSet("hero", UI.hero); render(); return;
+        case "homeday": UI.homeDay = +a.dataset.step === 0 ? J.today() : J.addDays(UI.homeDay, +a.dataset.step); render(); return;
+        case "calstep": {
+          const s = +a.dataset.step, m = innerWidth < 760 && UI.calMode === "week" ? "day" : UI.calMode;
+          if (s === 0) UI.calDate = J.today();
+          else if (m === "month") { const d = J.parseYmd(UI.calDate); UI.calDate = J.ymd(new Date(d.getFullYear(), d.getMonth() + s, 1)); }
+          else UI.calDate = J.addDays(UI.calDate, s * (m === "week" ? 7 : 1));
+          render(); return;
+        }
+        case "gotoDay": UI.calDate = a.dataset.date; UI.calMode = innerWidth < 760 ? "day" : "week"; lsSet("calMode", UI.calMode); render(); return;
+        case "gapprove": G.approve(); return;
+        case "gretry": G.refresh(); return;
+        case "openProject": e.preventDefault(); openProject(id); return;
+        case "closeProject": e.preventDefault(); UI.project = null; render(); return;
+        case "newProject": { const p = A.newProject("New project"); openProject(p.id, true); return; }
+        case "delProject": {
+          if (!a.dataset.armed) { a.dataset.armed = "1"; a.textContent = "Click again: tasks stay, unassigned"; return; }
+          const p = project(UI.project), ts = allTasks().filter(t => t.project === p.id);
+          ts.forEach(t => A.update(t.id, { project: null }));
+          S.remove("projects", p.id); UI.project = null; render();
+          J.toast(`Deleted “${short(p.name, 30)}”`, { label: "Undo", run: () => { S.put("projects", p); ts.forEach(t => A.update(t.id, { project: p.id })); } });
+          return;
+        }
+        case "pathTo": e.preventDefault(); if (UI.view !== "path") { go("path"); setTimeout(() => scrollToPath(id), 80); } else scrollToPath(id); return;
+        case "pathYear": { const el = document.getElementById("year-" + a.dataset.year); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+        case "course": UI.openCourse = UI.openCourse === a.dataset.key ? null : a.dataset.key; render(); return;
+        case "courseProject": { const p = A.newProject(`${a.dataset.code}${a.dataset.name ? " · " + a.dataset.name : ""}`); S.patch("projects", p.id, { notes: `Course notes for ${a.dataset.code}.\n\n## Week 1\n- ` }); J.toast(`Project “${short(p.name, 30)}” created`); render(); return; }
+        case "addPath": editPath(null, a.dataset.kind); return;
+        case "editPath": editPath(S.get("path", id)); return;
+        case "addSkill": editSkill(null); return;
+        case "editSkill": editSkill(S.get("skills", id)); return;
+        case "moveSkill": A.move("skills", id, +a.dataset.dir); return;
+        case "addLog": editLog(null); return;
+        case "editLog": editLog(S.get("log", id)); return;
+        case "hlLog": { const en = S.get("log", id); S.patch("log", id, { highlight: !en.highlight }); return; }
+        case "moveLog": { const en = S.get("log", id); A.move("log", id, +a.dataset.dir, x => x.group === en.group); return; }
+        case "copyCV": J.copyText(cvText()).then(ok => ok ? J.toast("Copied your flight log as plain text") : J.form.open({ eyebrow: "Flight log", title: "CV text", value: { t: cvText() }, fields: [{ key: "t", label: "Select all and copy", type: "textarea", rows: 14 }] })); return;
+        case "seed": S.importSeed(J.buildSeed(window.JULES_SEED)); J.toast("Starter data loaded"); return;
+      }
+    }
+    const tab = e.target.closest("[data-tab]");
+    if (tab) { UI[tab.dataset.tab] = tab.dataset.val; lsSet(tab.dataset.tab, tab.dataset.val); render(); return; }
+    const ev = e.target.closest("[data-ev]");
+    if (ev) { const [calId, evId] = ev.dataset.ev.split("|"); eventDetails(calId, evId, ev.dataset.date); return; }
+    const sw = e.target.closest("[data-pcolor]");
+    if (sw) { S.patch("projects", UI.project, { color: sw.dataset.pcolor }); return; }
+    const row = e.target.closest("[data-task]");
+    if (row && !e.target.closest("button.chk, .grip, a")) { UI.sel = row.dataset.task; TD.open(row.dataset.task); return; }
+    const col = e.target.closest(".tl-col");
+    if (col && e.target === col) newTaskAt(col, e.clientY);
+  });
+  document.addEventListener("change", e => {
+    if (!e.target.closest("#app")) return;
+    const c = e.target.dataset.ctl;
+    if (c === "tasksProject") { UI.tasksProject = e.target.value; render(); }
+    else if (c === "showDone") { UI.showDone = e.target.checked; lsSet("showDone", UI.showDone); render(); }
+    else if (e.target.dataset.cal !== undefined) G.toggleCal(e.target.dataset.cal);
+    else if (e.target.dataset.calauto !== undefined) G.toggleAuto();
+    else if (e.target.dataset.pfield === "status") S.patch("projects", UI.project, { status: e.target.value });
+    else if (e.target.dataset.pfield === "progress") S.patch("projects", UI.project, { progress: +e.target.value / 100 });
+    else if (e.target.dataset.pfield === "name") { const v = e.target.value.trim(); if (v) S.patch("projects", UI.project, { name: v }); }
+  });
+  document.addEventListener("keydown", e => { if (e.target.dataset && e.target.dataset.pfield === "name" && e.key === "Enter") e.target.blur(); });
+
+  /* ---------------- keyboard ---------------- */
+  document.addEventListener("keydown", e => {
+    const typing = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#palette").hidden ? PAL.open() : PAL.close(); return; }
+    if (e.key === "Escape") {
+      if (J.overlay.closeTop()) { e.preventDefault(); return; }
+      if (typing) { e.target.blur(); return; }
+      if (UI.view === "film") { J.warp(() => go("home")); return; }
+      if (UI.view === "projects" && UI.project) { UI.project = null; render(); }
+      return;
+    }
+    if (typing || e.metaKey || e.ctrlKey || e.altKey || J.overlay.any()) return;
+    if (UI.view === "film") return;
+    const k = e.key;
+    const vi = ["1", "2", "3", "4", "5", "6"].indexOf(k);
+    if (vi >= 0) { go(ORDER[vi]); return; }
+    if (k === "n" || k === "N") { e.preventDefault(); focusQuickAdd(); return; }
+    if (k === "/") { e.preventDefault(); PAL.open(); return; }
+    if (k === "?") { showKeys(); return; }
+    if (k === "f" || k === "F") { J.warp(() => go("film")); return; }
+    /* moving through the task rows on screen */
+    const rows = $$("#view .trow");
+    if (!rows.length) return;
+    let i = rows.findIndex(r => r.dataset.task === UI.sel);
+    if (k === "j" || k === "ArrowDown" && document.activeElement && document.activeElement.classList.contains("trow")) { e.preventDefault(); i = Math.min(rows.length - 1, i + 1); }
+    else if (k === "k" || k === "ArrowUp" && document.activeElement && document.activeElement.classList.contains("trow")) { e.preventDefault(); i = Math.max(0, i - 1); }
+    else if (i >= 0 && (k === "x" || k === " ")) { e.preventDefault(); A.toggle(UI.sel); return; }
+    else if (i >= 0 && k === "Enter") { e.preventDefault(); TD.open(UI.sel); return; }
+    else if (i >= 0 && (k === "Delete" || k === "Backspace")) { e.preventDefault(); const nx = rows[i + 1] || rows[i - 1]; A.remove(UI.sel); UI.sel = nx ? nx.dataset.task : null; return; }
+    else return;
+    UI.sel = rows[Math.max(0, i)].dataset.task;
+    rows.forEach(r => r.classList.toggle("sel", r.dataset.task === UI.sel));
+    rows[Math.max(0, i)].focus({ preventScroll: false });
+  });
+  document.addEventListener("focusin", e => { const r = e.target.closest && e.target.closest("#view .trow"); if (r) { UI.sel = r.dataset.task; $$("#view .trow.sel").forEach(x => x !== r && x.classList.remove("sel")); r.classList.add("sel"); } });
+
+  /* ======================================================================
+     6. ROUTER AND RENDERING
+     ====================================================================== */
+  function capture() {
+    const st = { scroll: {}, inputs: [] };
+    $$("#view [data-keep-scroll]").forEach(el => { st.scroll[el.dataset.keepScroll] = el.scrollTop; });
+    const a = document.activeElement;
+    $$("#view [data-keep]").forEach(el => {
+      if (el.value || el === a) st.inputs.push({ id: el.id, value: el.value, focus: el === a, s: el.selectionStart, e: el.selectionEnd, editing: el.classList.contains("notes-ta") && !el.hidden });
+    });
+    return st;
+  }
+  function restore(st) {
+    Object.entries(st.scroll).forEach(([k, v]) => { const el = $(`#view [data-keep-scroll="${k}"]`); if (el) el.scrollTop = v; });
+    st.inputs.forEach(x => {
+      const el = x.id && document.getElementById(x.id);
+      if (!el) return;
+      if (x.editing) notesEdit(el.closest(".notes"), true);
+      el.value = x.value;
+      if (el.classList.contains("qa-in")) qaPreview(el.closest(".qa"));
+      if (x.focus) { el.focus({ preventScroll: true }); try { el.setSelectionRange(x.s, x.e); } catch (err) {} }
+    });
+  }
+  /* Scroll a timeline so "now" (or 7 am on other days) is in view, once per day shown. */
+  function scrollTimelines() {
+    $$("#view [data-keep-scroll]").forEach(sc => {
+      const key = sc.dataset.keepScroll;
+      if (UI.scrolledFor[key]) return;
+      const col = $(".tl-col", sc); if (!col) return;
+      UI.scrolledFor[key] = true;
+      const h0 = +col.dataset.h0, pph = +col.dataset.pph;
+      const hasToday = !!$(".now-line", sc);
+      const m = hasToday ? J.nowMin() - 90 : 7 * 60;
+      sc.scrollTop = Math.max(0, (m / 60 - h0) * pph);
+    });
+  }
+
+  let lastRendered = null;
+  function render() {
+    if (UI.view === "film") return;
+    const view = $("#view");
+    const st = lastRendered === UI.view ? capture() : { scroll: {}, inputs: [] };
+    const entering = lastRendered !== UI.view;
+    view.innerHTML = (V[UI.view] || V.home)();
+    restore(st);
+    scrollTimelines();
+    if (entering) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
+    lastRendered = UI.view;
+    $$(".nav a[data-view]").forEach(a => { a.classList.toggle("on", a.dataset.view === UI.view); a.setAttribute("aria-current", a.dataset.view === UI.view ? "page" : "false"); });
+    const part = (VIEWS_META[UI.view] || {}).part;
+    $$(".side-brand .rp").forEach(g => g.classList.toggle("on", g.dataset.part === part || (UI.view === "path" && g.dataset.part === "star")));
+    document.title = `${(VIEWS_META[UI.view] || {}).label || "Jules"} · Jules`;
+    syncStatus();
+  }
+  J.render = render;
+
+  function syncStatus() {
+    const el = $("#syncStatus"); if (!el) return;
+    const n = S.pendingCount ? S.pendingCount() : 0;
+    const txt = S.mode === "local" ? "Saved in this browser" : S.status === "error" ? "Sync problem · changes kept here" : n ? "Saving…" : S.status === "cached" ? "Offline copy · will sync" : S.mode === "db" ? "Synced" : "Starting…";
+    el.textContent = txt;
+    el.className = "side-status" + (S.status === "error" ? " warn" : "");
+    el.title = S.error || "";
+  }
+
+  function go(view) {
+    if (location.hash.slice(1) === view) route();
+    else location.hash = view;
+  }
+  J.go = go;
+  function route() {
+    let v = location.hash.slice(1);
+    if (v === "star") { v = "path"; setTimeout(() => { const el = $("#path-star"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 80); }
+    if (!VIEWS_META[v] && v !== "film") v = "home";
+    const was = UI.view;
+    UI.view = v;
+    J.overlay.closeTop && TD.isOpen() && v === "film" && TD.close();
+    if (v === "film") {
+      $("#app").hidden = true;
+      J.film && J.film.enter();
+      document.title = "Film · Jules";
+      return;
+    }
+    if (was === "film" && J.film) J.film.leave();
+    $("#app").hidden = false;
+    if (was !== v && was !== "film") scrollTo(0, 0);
+    render();
+  }
+
+  /* The warp: a burst of streaks used for jumps between the app and the film. */
+  J.warp = (mid, done) => {
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cv = $("#warp");
+    if (reduced || !cv) { mid && mid(); done && done(); return; }
+    const ctx = cv.getContext("2d"), dpr = Math.min(2, devicePixelRatio || 1), W = innerWidth, H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr; cv.classList.add("on");
+    const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2;
+    const stars = Array.from({ length: 240 }, () => ({ a: Math.random() * Math.PI * 2, r: Math.random() * .9 + .05, w: Math.random() * 1.2 + .3, c: Math.random() < .2 ? "255,200,150" : "235,240,255" }));
+    const t0 = performance.now(), dur = 950;
+    const sm = t => { t = J.clamp(t); return t * t * (3 - 2 * t); };
+    let jumped = false;
+    const step = now => {
+      const t = J.clamp((now - t0) / dur), k = t < .45 ? sm(t / .45) : 1 - sm((t - .45) / .55);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = `rgba(0,0,0,${(.94 * k).toFixed(3)})`; ctx.fillRect(0, 0, W, H);
+      stars.forEach(s => {
+        const r1 = s.r * R * (1 + k * .35), len = R * .55 * k * k * (s.r + .2);
+        ctx.strokeStyle = `rgba(${s.c},${(.85 * k).toFixed(3)})`; ctx.lineWidth = s.w;
+        ctx.beginPath(); ctx.moveTo(cx + Math.cos(s.a) * r1, cy + Math.sin(s.a) * r1); ctx.lineTo(cx + Math.cos(s.a) * (r1 + len), cy + Math.sin(s.a) * (r1 + len)); ctx.stroke();
+      });
+      if (t >= .45 && !jumped) { jumped = true; mid && mid(); }
+      if (t < 1) requestAnimationFrame(step); else { cv.classList.remove("on"); done && done(); }
+    };
+    requestAnimationFrame(step);
+  };
+  /* Links to #film get the warp on the way in. */
+  document.addEventListener("click", e => {
+    const a = e.target.closest('a[href="#film"]');
+    if (!a) return;
+    e.preventDefault();
+    J.warp(() => go("film"));
+  });
+
+  /* ---------------- start up ---------------- */
+  function buildShell() {
+    $("#sideBrand").innerHTML = J.rocketSVG() + `<span class="brand-word">Jules</span>`;
+    const nav = ORDER.map(v => `<a href="#${v}" data-view="${v}"><span class="ni">${J.icon[v]}</span><span class="nl">${VIEWS_META[v].label}</span><kbd>${VIEWS_META[v].key}</kbd></a>`).join("");
+    $("#sideNav").innerHTML = nav;
+    $("#tabbar").innerHTML = ORDER.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v]}<span>${v === "path" ? "Path" : v === "log" ? "Log" : VIEWS_META[v].label}</span></a>`).join("");
+    $("#sideSearch").innerHTML = `${J.icon.search}<span>Search or do</span><kbd>⌘K</kbd>`;
+    $("#sideSearch").addEventListener("click", () => PAL.open());
+    $("#sideSettings").innerHTML = `${J.icon.gear}<span>Settings</span>`;
+    $("#sideSettings").addEventListener("click", openSettings);
+    $("#sideKeys").addEventListener("click", showKeys);
+  }
+
+  /* A missing header photo (e.g. on GitHub, where photos aren't included) just disappears. */
+  document.addEventListener("error", e => { if (e.target && e.target.classList && e.target.classList.contains("hero-img")) e.target.remove(); }, true);
+  buildShell();
+  $("#view").innerHTML = `<div class="loading"><span class="tc">T–0</span> Loading mission control…</div>`;
+  let routed = false;
+  S.on(() => { if (!routed) return; if (UI.view !== "film") render(); else syncStatus(); });
+  G.on(() => { if (routed && (UI.view === "home" || UI.view === "calendar")) render(); });
+  addEventListener("hashchange", route);
+  let lastDay = J.today(), resizeT;
+  addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (UI.view === "calendar") render(); }, 200); });
+  setInterval(() => {
+    if (J.today() !== lastDay) { lastDay = J.today(); UI.homeDay = lastDay; render(); return; }
+    const c = $("#clock"); if (c) c.textContent = J.fmtTime(J.nowMin());
+    $$("#view .now-line").forEach(l => {
+      const col = l.closest(".tl-col"); const h0 = +col.dataset.h0, pph = +col.dataset.pph, nm = J.nowMin();
+      l.style.top = ((nm - h0 * 60) / 60 * pph) + "px"; $("span", l).textContent = J.fmtTime(nm);
+    });
+  }, 30000);
+  S.ready.then(() => { routed = true; route(); });
 })();
