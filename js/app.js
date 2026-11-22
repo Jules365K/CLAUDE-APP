@@ -453,7 +453,7 @@
 
     /* the lower row: week, projects, flight path, inbox */
     h += `<div class="home-low">
-      <section class="sec">${secHead("Next 7 days", `<span class="count tc" title="Hours of tasks finished this week (Mon–Sun) against your weekly goal">${fuelText()}</span>`)}${weekBars()}</section>
+      <section class="sec">${secHead("Next 7 days")}${weekBars()}</section>
       <section class="sec">${secHead("Projects", `<a class="link" href="#projects">All</a>`)}${projects().filter(p => p.status !== "landed").slice(0, 5).map(projMini).join("") || `<p class="empty">No projects yet.</p>`}</section>
       <section class="sec">${secHead("Flight path", `<a class="link" href="#path">Open</a>`)}${upNext()}</section>
       <section class="sec" data-drop="day" data-date="">${secHead("Inbox", `<span class="count tc">${inbox.length}</span>`)}${inbox.length ? taskList(inbox.slice(0, 5), { date: false }) + (inbox.length > 5 ? `<a class="link more" href="#tasks">${inbox.length - 5} more in Tasks</a>` : "") : `<p class="empty">Empty. Tasks with no date land here.</p>`}<p class="hint">Drag a task onto the schedule to give it a time.</p></section>
@@ -484,12 +484,12 @@
     return `<div class="wbars">${data.map(x => `<div class="wb${x.d === J.today() ? " today" : ""}" data-drop="day" data-date="${x.d}" title="${J.fmtDate(x.d)}: ${x.plan.toFixed(1)} h planned, ${x.done.toFixed(1)} h done">` +
       `<div class="wb-col"><i class="plan" style="height:${x.plan / max * 100}%"></i><i class="done" style="height:${x.done / max * 100}%"></i></div>` +
       `<span class="wb-d">${J.DAY[J.dow(x.d)].slice(0, 2)}</span><span class="wb-n tc">${x.plan ? x.plan.toFixed(x.plan % 1 ? 1 : 0) : "·"}</span></div>`).join("")}</div>
-      <p class="hint">Outline: hours planned. Filled: hours done. Drop a task on a day to move it there.</p>`;
+      <p class="hint"><b class="fuel tc">${fuelText()}</b> Outline: hours planned. Filled: hours done. Drop a task on a day to move it there.</p>`;
   }
   function fuelText() {
     const ws = J.weekStart(J.today()), we = J.addDays(ws, 6), goal = S.meta().fuelGoal || 10;
     const h = allTasks().filter(t => isDone(t) && t.doneAt && J.ymd(new Date(t.doneAt)) >= ws && J.ymd(new Date(t.doneAt)) <= we).reduce((s, t) => s + (t.dur || 0), 0) / 60;
-    return `${h.toFixed(1)} / ${goal} h this week`;
+    return `${h.toFixed(1)} of ${goal} h done this week.`;
   }
   function projMini(p) {
     const pr = progressOf(p.id), nx = nextTaskOf(p.id);
@@ -805,11 +805,12 @@
 
   /* ---------------- the task editor drawer ---------------- */
   const TD = J.taskDrawer = (() => {
-    let id = null;
+    let id = null, sending = false;
     const el = () => $("#drawer");
     function googleBlock(t) {
       const can = G.state !== "unavailable";
       if (!can) return `<p class="dw-note">Send to Google works when Jules is opened in claude.ai with the Notion connector.</p>`;
+      if (sending) return `<button type="button" class="btn" disabled>Sending…</button>`;
       if (t.gcal) {
         const changed = t.gcal.due !== t.due || t.gcal.start !== t.start || (t.start != null && t.gcal.dur !== (t.dur || 30));
         return `<p class="dw-text">In Google Calendar since ${esc(J.fmtDate(J.ymd(new Date(t.gcal.sentAt))))}.${t.gcal.url ? ` <a class="link" href="${esc(t.gcal.url)}" target="_blank" rel="noopener noreferrer">Open ${J.icon.ext}</a>` : ""}</p>` +
@@ -900,10 +901,11 @@
       else if (act === "mkproj") { const n = $("#dwNewProj").value.trim(); if (!n) return; const p = A.newProject(n); A.update(id, { project: p.id }); }
       else if (act === "delete") { if (b.dataset.armed) { const tid = id; close(); A.remove(tid); } else { b.dataset.armed = "1"; b.textContent = "Click again to delete"; } }
       else if (act === "gsend") {
-        const box = $("#dwGoogle");
-        b.disabled = true; b.textContent = "Sending…";
+        if (sending) return;
+        sending = true; b.disabled = true; b.textContent = "Sending…";
         try {
           const res = await G.sendTask(t, (project(t.project) || {}).name);
+          sending = false;
           A.update(t.id, { gcal: res });
           J.toast("Sent to Google Calendar");
         } catch (err) {
@@ -918,9 +920,11 @@
           }[code] || (code === "server_unavailable" || code === "upstream_error" || code === "tool_error"
             ? "Not sure it went through. Check Google Calendar before sending again, so you don't get a duplicate." + (err.message ? ` (${String(err.message).slice(0, 120)})` : "")
             : "Couldn't send it" + (err && err.message ? ": " + String(err.message).slice(0, 120) : "."));
-          if (box) box.insertAdjacentHTML("beforeend", `<p class="dw-note warn">${esc(msg)}</p>`);
-          b.disabled = false; b.textContent = "Send to Google";
+          sending = false;
+          const g = $("#dwGoogle");
+          if (g) { g.innerHTML = googleBlock(S.get("tasks", t.id) || t); g.insertAdjacentHTML("beforeend", `<p class="dw-note warn">${esc(msg)}</p>`); }
         }
+        sending = false;
       }
     });
     /* Keep the drawer in step with changes made elsewhere (but never while you're typing in it). */
