@@ -28,6 +28,9 @@
     star: I('<path d="M8 2.2 9.6 6.3l4.3.3-3.3 2.8 1 4.2L8 11.3 4.4 13.6l1-4.2L2.1 6.6l4.3-.3z"/>'),
     check: I('<path d="m3.5 8.3 2.9 2.9 6.1-6.4"/>'),
     ext: I('<path d="M9 3h4v4M13 3 7.5 8.5M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>'),
+    image: I('<rect x="2.5" y="3" width="11" height="10" rx="1"/><circle cx="6" cy="6.6" r="1.2"/><path d="m2.8 11.6 3.4-3.2 2.4 2.2 1.8-1.6 3.1 2.8"/>'),
+    mail: I('<rect x="2" y="3.5" width="12" height="9" rx="1"/><path d="m2.5 4.2 5.5 4.6 5.5-4.6"/>'),
+    film: I('<rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M5 3v10M11 3v10M2.5 6h2.5M2.5 10h2.5M11 6h2.5M11 10h2.5"/>'),
     copy: I('<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/>')
   };
 
@@ -39,8 +42,13 @@
     engines: ["M64 640 H136 V666 H64 Z", "M72 666 H88 L92 704 H68 Z", "M92 666 H108 L112 704 H88 Z", "M112 666 H128 L132 704 H108 Z"],
     exhaust: ["M76 712 C 66 770 58 830 100 892 C 142 830 134 770 124 712 Z"]
   };
-  J.rocketSVG = (cls = "") => `<svg class="rocket ${cls}" viewBox="0 0 200 900" aria-hidden="true">` +
-    Object.entries(J.ROCKET).map(([k, ds]) => `<g class="rp" data-part="${k}">${ds.map(d => `<path d="${d}"/>`).join("")}</g>`).join("") + `</svg>`;
+  /* Generous invisible hit areas so each part of a small rocket is easy to click. */
+  const HIT = { star: [40, 0, 120, 90], command: [40, 96, 120, 204], body: [10, 300, 180, 340], engines: [40, 640, 120, 72], exhaust: [40, 712, 120, 188] };
+  J.PART_LABEL = { star: "The star · skills", command: "Command module · the route", body: "Body · projects", engines: "Engines · today", exhaust: "Exhaust · the launch" };
+  J.rocketSVG = (cls = "", interactive = false) => `<svg class="rocket ${cls}" viewBox="0 0 200 900"${interactive ? "" : ' aria-hidden="true"'}>` +
+    Object.entries(J.ROCKET).map(([k, ds]) => `<g class="rp" data-part="${k}"${interactive ? ` role="button" tabindex="0" aria-label="${J.PART_LABEL[k]}"` : ""}>` +
+      (interactive ? `<rect class="hit" x="${HIT[k][0]}" y="${HIT[k][1]}" width="${HIT[k][2]}" height="${HIT[k][3]}"/>` : "") +
+      `${ds.map(d => `<path d="${d}"/>`).join("")}</g>`).join("") + `</svg>`;
 
   /* ================= notes: a small, safe slice of Markdown ================= */
   function inline(s) {

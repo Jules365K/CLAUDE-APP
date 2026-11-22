@@ -57,14 +57,27 @@
   J.daysUntil = s => J.diffDays(J.today(), s);
 
   /* ---------- times (minutes after midnight) ---------- */
-  J.fmtTime = m => m == null ? "" : `${J.pad2(Math.floor(m / 60) % 24)}:${J.pad2(m % 60)}`;
+  /* "09:30": for form inputs and anything a machine reads. */
+  J.hm = m => m == null ? "" : `${J.pad2(Math.floor(m / 60) % 24)}:${J.pad2(m % 60)}`;
+  /* "9:30 am" (or "09:30" on a 24-hour device): whatever this computer's settings say. */
+  const at = m => new Date(2026, 0, 5, 0, m);
+  let TF = null, HF = null;
+  try { TF = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }); HF = new Intl.DateTimeFormat(undefined, { hour: "numeric" }); } catch (e) {}
+  J.fmtTime = m => m == null ? "" : TF ? TF.format(at(m)) : J.hm(m);
+  J.fmtHour = h => HF ? HF.format(at(h * 60)) : `${J.pad2(h)}:00`;
   J.parseHM = s => { if (!s) return null; const [h, m] = s.split(":").map(Number); return Number.isFinite(h) ? h * 60 + (m || 0) : null; };
   J.fmtDur = m => {
     if (!m) return "";
     const h = Math.floor(m / 60), r = m % 60;
     return h && r ? `${h}h ${r}m` : h ? `${h}h` : `${r}m`;
   };
-  J.fmtRange = (start, dur) => start == null ? "" : dur ? `${J.fmtTime(start)}–${J.fmtTime(start + dur)}` : J.fmtTime(start);
+  /* "9:00–10:30 am": the range shares its am/pm where the locale allows. */
+  J.fmtRange = (start, dur) => {
+    if (start == null) return "";
+    if (!dur) return J.fmtTime(start);
+    try { if (TF && TF.formatRange && start + dur < 1440) return TF.formatRange(at(start), at(start + dur)).replace(/\s+–\s+/, "–"); } catch (e) {}
+    return `${J.fmtTime(start)}–${J.fmtTime(start + dur)}`;
+  };
 
   /* ---------- repeats ---------- */
   /* The next date on or after `from` that fits the rule. */

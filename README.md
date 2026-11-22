@@ -13,18 +13,19 @@ Jules comes in two parts:
 - **The app** is what you use every day: tasks, a calendar with Google Calendar alongside your tasks, projects with notes, the flight path to your degree, and a flight log that doubles as your CV.
 - **The film** is the cinematic scroll you launch from the sidebar. It is fed by the same live data.
 
-Status: **v0.5**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
+Status: **v0.6**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
 
 ## What it does
 
 | View | Rocket part | What you do there |
 |---|---|---|
-| **Home** (`1`) | Engines | See today: countdowns, today's tasks, a timeline of your day (Google events and your tasks), the next 7 days, projects, what's next on the flight path, and the inbox. |
+| **Home** (`1`) | All of it | The film you can work in. One scroll through five scenes: the launch (greeting and countdowns), today (tasks, your day's timeline with Google events, the next 7 days), projects and the inbox, the route, and the star. The rocket in the sidebar lights up the scene you're in; click a part to jump there. |
 | **Tasks** (`2`) | Engines | Work through everything as a list (overdue, today, the next 7 days, later, no date) or as a board (to do, doing, done). |
 | **Calendar** (`3`) | Engines | Day, week and month views. Drag tasks onto a time to timebox them, and drag a block's bottom edge to change how long it runs. |
-| **Projects** (`4`) | Body | Each project has its tasks, its progress (worked out from those tasks), and notes in simple Markdown with tickable checklists. |
-| **Flight path** (`5`) | Command module | The whole route on one line, then year by year. Click a course code to see its name, or start a project for its notes and homework. Skills ("the star") are at the bottom. |
-| **Flight log** (`6`) | Exhaust | Recent burns (tasks you finished), plus achievements grouped for your CV. **Copy as CV text** turns the whole log into plain text. |
+| **Mail** (`4`) | Engines | Your Gmail inbox, with Claude marking which emails need a reply. Turn any email into a task. Read only: nothing is sent, drafted or archived. |
+| **Projects** (`5`) | Body | Each project has its tasks, its progress (worked out from those tasks), and notes in simple Markdown with tickable checklists. |
+| **Flight path** (`6`) | Command module | The whole route on one line, then year by year. Click a course code to see its name, or start a project for its notes and homework. Skills ("the star") are at the bottom. |
+| **Flight log** (`7`) | Exhaust | Recent burns (tasks you finished), plus achievements grouped for your CV. **Copy as CV text** turns the whole log into plain text. |
 | **Film** (`F`) | All of it | The cinematic scroll. Any part of the rocket takes you to its view. |
 
 ### Quick add
@@ -59,7 +60,7 @@ Jules understands:
 
 | Key | What it does |
 |---|---|
-| `1`–`6` | Switch view |
+| `1`–`7` | Switch view |
 | `N` | New task |
 | `⌘K` or `/` | Search and commands |
 | `J` / `K` | Move through tasks |
@@ -98,6 +99,7 @@ js/parse.js       quick add: plain English to a task
 js/seed.js        turns data.js into the records Jules stores
 js/store.js       saving and syncing (claude.ai database, or this browser)
 js/gcal.js        Google Calendar through the Notion connector (read and add only)
+js/mail.js        Gmail inbox, plus Claude's needs-a-reply verdicts (read only)
 js/ui.js          icons, notes Markdown, toasts, drag and drop, forms
 js/app.js         actions, the six views, the task editor, palette, keyboard, router
 js/film.js        the cinematic scroll, now fed by live data
@@ -123,9 +125,9 @@ Start with **`js/app.js`**. It's numbered:
    - `taskRow()` draws one task.
    - `quickAdd()` draws the input and its chips.
    - `timelineCol()` lays out a day. Overlapping blocks share the width; see `layoutCols()`.
-4. **Views:** `V.home`, `V.tasks`, `V.calendar`, `V.projects`, `V.path`, `V.log`. Each one returns HTML.
+4. **Views:** `V.home`, `V.tasks`, `V.calendar`, `V.mail`, `V.projects`, `V.path`, `V.log`. Each one returns HTML. Home's scroll effects (reveal once, drifting photos, the lit rocket) are in `homeAfter()`.
 5. **Editors:** the task drawer (`TD`), forms, settings, the command palette (`PAL`) and the keyboard.
-6. **Router:** `route()` reads the address after the `#` and shows that view, or the film. `render()` redraws the view whenever data changes.
+6. **Router:** `route()` reads the address after the `#` and shows that view, or the film, with a short letterbox cut in between (`J.cut`). `render()` redraws the view whenever data changes.
 
 **`js/store.js`** is worth reading next. Every save goes through `S.put()`, which updates the screen straight away and then writes in the background, one write at a time for each record.
 
@@ -138,10 +140,11 @@ Open `js/parse.js` and add a word to the dates rule. For example, make `arvo` me
 ## Roadmap
 
 1. ~~Look test~~ (v0.4)
-2. ~~Functional core: tasks, calendar, projects, flight path, log~~ ← v0.5
-3. Flight school: flashcards from your notes, with spaced repetition (FSRS)
-4. Hangar: CV and certifications
-5. Widgets: a home screen you can rearrange
+2. ~~Functional core: tasks, calendar, projects, flight path, log~~ (v0.5)
+3. ~~Cinematic Home, normal type, Mail~~ ← v0.6
+4. Flight school: flashcards from your notes, with spaced repetition (FSRS)
+5. Hangar: CV and certifications
+6. Widgets: a home screen you can rearrange
 
 ## About the course data
 

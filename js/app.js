@@ -36,11 +36,12 @@
     home:     { label: "Home",        part: "engines", key: "1" },
     tasks:    { label: "Tasks",       part: "engines", key: "2" },
     calendar: { label: "Calendar",    part: "engines", key: "3" },
-    projects: { label: "Projects",    part: "body",    key: "4" },
-    path:     { label: "Flight path", part: "command", key: "5" },
-    log:      { label: "Flight log",  part: "exhaust", key: "6" }
+    mail:     { label: "Mail",        part: "engines", key: "4" },
+    projects: { label: "Projects",    part: "body",    key: "5" },
+    path:     { label: "Flight path", part: "command", key: "6" },
+    log:      { label: "Flight log",  part: "exhaust", key: "7" }
   };
-  const ORDER = ["home", "tasks", "calendar", "projects", "path", "log"];
+  const ORDER = ["home", "tasks", "calendar", "mail", "projects", "path", "log"];
   const COLORS = ["flame", "plume", "steel", "sage", "sand", "rose"];
   const STATUS = { burning: "Burning · active", fuelling: "Fuelling · getting ready", coasting: "Coasting · paused", landed: "Landed · done" };
   const STATUS_SHORT = { burning: "Burning", fuelling: "Fuelling", coasting: "Coasting", landed: "Landed" };
@@ -303,7 +304,7 @@
       const tiny = hh < 34 ? " tiny" : "";
       if (it.k === "ev") {
         const e = it.ev;
-        h += `<button type="button" class="blk ev${tiny}${e.transparent ? " free" : ""}" style="${pos};--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${ymd}"><b>${esc(e.title)}</b><span class="tc">${J.fmtTime(e.segStart)}–${J.fmtTime(e.segEnd)}</span></button>`;
+        h += `<button type="button" class="blk ev${tiny}${e.transparent ? " free" : ""}" style="${pos};--c:var(--c-${e.color})" data-ev="${esc(e.calId)}|${esc(e.id)}" data-date="${ymd}"><b>${esc(e.title)}</b><span class="tc">${J.fmtRange(e.segStart, e.segEnd - e.segStart)}</span></button>`;
       } else {
         const t = it.t, p = project(t.project), done = isDone(t);
         h += `<div class="blk tk${tiny}${done ? " done" : ""}" style="${pos};--c:${p ? cvar(p.color) : "var(--ink)"}" data-task="${t.id}" data-drag='{"type":"task","id":"${t.id}","block":1}' data-drag-label="${esc(short(t.title, 40))}">` +
@@ -318,7 +319,7 @@
     return `<div class="tl-col${o.cls ? " " + o.cls : ""}" data-drop="slot" data-date="${ymd}" data-h0="${R.h0}" data-pph="${pph}" style="height:${(R.h1 - R.h0) * pph}px;--pph:${pph}px">${h}</div>`;
   }
   const hourLabels = (R, pph) => `<div class="tl-hours" style="height:${(R.h1 - R.h0) * pph}px">` +
-    Array.from({ length: R.h1 - R.h0 }, (_, i) => `<span style="top:${i * pph}px">${J.pad2(R.h0 + i)}:00</span>`).join("") + `</div>`;
+    Array.from({ length: R.h1 - R.h0 }, (_, i) => `<span style="top:${i * pph}px">${J.fmtHour(R.h0 + i)}</span>`).join("") + `</div>`;
 
   /* Drop targets */
   function minuteAt(col, y) {
@@ -384,7 +385,7 @@
     J.form.open({
       eyebrow: "Google Calendar · " + e.calName, title: e.title, fields: [{
         key: "x", type: "html", label: "When",
-        html: `<p class="dw-text">${e.allDay ? (e.startYmd === e.endYmd ? J.fmtDate(e.startYmd, { long: true }) : J.fmtDate(e.startYmd) + " – " + J.fmtDate(e.endYmd)) + " · all day" : J.fmtDate(ymd, { long: true }) + " · " + J.fmtTime(e.segStart) + "–" + J.fmtTime(e.segEnd)}</p>` +
+        html: `<p class="dw-text">${e.allDay ? (e.startYmd === e.endYmd ? J.fmtDate(e.startYmd, { long: true }) : J.fmtDate(e.startYmd) + " – " + J.fmtDate(e.endYmd)) + " · all day" : J.fmtDate(ymd, { long: true }) + " · " + J.fmtRange(e.segStart, e.segEnd - e.segStart)}</p>` +
           (e.url ? `<p><a class="btn" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Open in Notion Calendar ${J.icon.ext}</a></p>` : "") +
           `<p class="dw-note">Jules only reads your calendar here. Change or delete events in Google or Notion Calendar.</p>`
       }], value: {}
@@ -406,7 +407,16 @@
      ====================================================================== */
   const V = {};
 
-  /* ---------------- HOME: today at a glance ---------------- */
+  /* ---------------- HOME: the film you can work in ----------------
+     One scroll, five scenes, one per part of the rocket:
+       launch (exhaust) → today (engines) → projects (body) → the route (command module) → the star.
+     Each scene has a photo behind it that drifts as you scroll; the rocket in the sidebar
+     lights up the part you're looking at, and clicking a part jumps to its scene. */
+  const SCENES = [["h-launch", "exhaust"], ["h-today", "engines"], ["h-projects", "body"], ["h-route", "command"], ["h-star", "star"]];
+  UI.revealed = new Set();
+  const rv = id => UI.revealed.has(id) ? " in" : "";
+  const daysWord = n => n === 0 ? "today" : n === 1 ? "tomorrow" : `in ${n} days`;
+
   V.home = () => {
     const today = J.today(), meta = S.meta(), all = allTasks();
     const open = all.filter(t => !isDone(t));
@@ -421,45 +431,144 @@
     const greet = hr < 5 ? "Late night" : hr < 12 ? "Morning" : hr < 18 ? "Afternoon" : "Evening";
     const H = HERO[UI.hero % HERO.length];
     const cds = (meta.countdowns || []).filter(c => c.date && J.daysUntil(c.date) >= 0).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 3);
+    const lead = cds[0];
 
-    /* the cinematic band */
-    let h = `<section class="hero" aria-label="Today">
-      <img class="hero-img" src="img/${H.img}" alt="" style="object-position:${H.pos}">
-      <div class="hero-shade"></div>
-      <div class="hero-in">
-        <p class="eyebrow-s"><span class="tc" id="clock">${J.fmtTime(nm)}</span> · ${esc(J.fmtDate(today, { long: true }))}</p>
-        <h1 class="hero-title">${greet}${meta.name ? ", " + esc(meta.name) : ""}</h1>
-        <p class="hero-sub">${todays.length ? `${plural(todays.length, "task")} today${planned ? " · " + J.fmtDur(planned) + " planned" : ""}` : "Nothing booked today yet"}${next ? ` · next: <b>${esc(short(next.title, 30))}</b> at ${J.fmtTime(next.start)}` : ""}${overdue.length ? ` · <span class="late">${overdue.length} overdue</span>` : ""}</p>
+    let summary;
+    if (todays.length) summary = `${plural(todays.length, "task")} today${planned ? `, ${J.fmtDur(planned)} planned` : ""}${next ? `. Next up: ${esc(short(next.title, 34))} at ${J.fmtTime(next.start)}` : ""}.`;
+    else if (tomorrow.length) summary = `Nothing left for today. ${plural(tomorrow.length, "task")} tomorrow, starting with ${esc(short(tomorrow[0].title, 34))}${tomorrow[0].start != null ? " at " + J.fmtTime(tomorrow[0].start) : ""}.`;
+    else summary = "A clear day.";
+
+    /* 1. launch */
+    let h = `<div class="cine">
+    <section class="cs cs-launch${rv("h-launch")}" id="h-launch" aria-label="Today at a glance">
+      <div class="cs-bg" aria-hidden="true"><img class="hero-img" src="img/${H.img}" alt="" style="object-position:${H.pos}"></div>
+      <div class="cs-shade"></div>
+      <div class="cs-wrap launch-in">
+        <div class="launch-l">
+          <p class="cs-kicker rv">${esc(J.fmtDate(today, { long: true }))} · <span id="clock">${J.fmtTime(nm)}</span></p>
+          <h1 class="cs-title rv" style="--d:1">${greet}${meta.name ? ", " + esc(meta.name) : ""}</h1>
+          <p class="cs-sub rv" style="--d:2">${summary}${overdue.length ? ` <a class="late" href="#h-today" data-act="homeScroll" data-to="h-today">${overdue.length} overdue.</a>` : ""}</p>
+        </div>
+        ${lead ? `<div class="launch-r rv" style="--d:3">
+          <p class="count-big"><span class="num">${J.daysUntil(lead.date) || "Today"}</span>${J.daysUntil(lead.date) ? `<span class="unit">${J.daysUntil(lead.date) === 1 ? "day" : "days"}</span>` : ""}</p>
+          <p class="count-what">${J.daysUntil(lead.date) ? "until " : ""}${esc(lead.label)}<span>${esc(J.fmtDate(lead.date))}</span></p>
+          ${cds.slice(1).map(c => `<p class="count-more">${esc(c.label)} ${daysWord(J.daysUntil(c.date))}</p>`).join("")}
+          <button type="button" class="link count-edit" data-act="settings">Edit countdowns</button>
+        </div>` : `<div class="launch-r rv"><button type="button" class="link" data-act="settings">Add a countdown</button></div>`}
       </div>
-      <div class="hero-cd">${cds.map(c => { const n = J.daysUntil(c.date); return `<div class="cd"><span class="cd-n tc">${n === 0 ? "TODAY" : "T–" + n}</span><span class="cd-l">${esc(c.label)}</span><span class="cd-d">${esc(J.fmtDate(c.date))}</span></div>`; }).join("")}
-        <button type="button" class="cd-edit link" data-act="settings">Edit countdowns</button></div>
-      <button type="button" class="hero-swap" data-act="hero" aria-label="Change the picture">${J.pad2(UI.hero % HERO.length + 1)} / ${J.pad2(HERO.length)}</button>
+      <button type="button" class="hero-swap ibtn" data-act="hero" aria-label="Change the picture" title="Change the picture">${J.icon.image}</button>
+      <button type="button" class="cs-cue" data-act="homeScroll" data-to="h-today">Today ${J.icon.down}</button>
     </section>`;
 
-    if (S.mode === "db" && S.isEmpty()) h += emptyWelcome();
+    if (S.mode === "db" && S.isEmpty()) h += `<div class="cs-wrap">${emptyWelcome()}</div>`;
 
-    /* today list + schedule */
-    h += `<div class="home-main">
-      <section class="sec today" aria-label="Today's tasks">
-        ${secHead("Today", `<span class="count tc">${todays.length + doneToday.length ? `${doneToday.length}/${todays.length + doneToday.length} done` : ""}</span>`)}
-        ${quickAdd("home", { due: "today", placeholder: "Add to today… try “Vectors 9am 1h #prep”" })}
-        ${overdue.length ? `<p class="lbl late">Overdue</p>${taskList(overdue)}` : ""}
-        ${todays.length ? taskList(todays, { date: false }) : (overdue.length ? "" : `<p class="empty">A clear day. Add something above, or drag something in from the inbox.</p>`)}
-        ${doneToday.length ? `<p class="lbl">Burned today</p>${taskList(doneToday, { date: false })}` : ""}
-        ${tomorrow.length ? `<p class="lbl" data-drop="day" data-date="${J.addDays(today, 1)}">Tomorrow</p>${taskList(tomorrow, { date: false })}` : ""}
-      </section>
-      <section class="sec sched" aria-label="Schedule">${homeSchedule()}</section>
-    </div>`;
+    /* 2. today */
+    h += `<section class="cs cs-today${rv("h-today")}" id="h-today" aria-label="Today">
+      <div class="cs-bg dim" aria-hidden="true"><img src="img/engines.jpg" alt=""></div>
+      <div class="cs-shade heavy"></div>
+      <div class="cs-wrap">
+        <header class="cs-head rv"><h2>Today</h2><p>${todays.length + doneToday.length ? `${doneToday.length} of ${todays.length + doneToday.length} done` : ""}${mailLine()}</p></header>
+        <div class="home-main">
+          <div class="sec today rv" style="--d:1">
+            ${quickAdd("home", { due: "today", placeholder: "Add to today, e.g. “Vectors 9am 1h #prep”" })}
+            ${overdue.length ? `<p class="lbl late">Overdue</p>${taskList(overdue)}` : ""}
+            ${todays.length ? taskList(todays, { date: false }) : (overdue.length ? "" : `<p class="empty">Nothing booked for today.</p>`)}
+            ${doneToday.length ? `<p class="lbl">Done today</p>${taskList(doneToday, { date: false })}` : ""}
+            ${tomorrow.length ? `<p class="lbl" data-drop="day" data-date="${J.addDays(today, 1)}">Tomorrow</p>${taskList(tomorrow, { date: false })}` : ""}
+            <div class="week-block"><p class="lbl">Next 7 days</p>${weekBars()}</div>
+          </div>
+          <div class="sec sched rv" style="--d:2">${homeSchedule()}</div>
+        </div>
+      </div>
+    </section>`;
 
-    /* the lower row: week, projects, flight path, inbox */
-    h += `<div class="home-low">
-      <section class="sec">${secHead("Next 7 days")}${weekBars()}</section>
-      <section class="sec">${secHead("Projects", `<a class="link" href="#projects">All</a>`)}${projects().filter(p => p.status !== "landed").slice(0, 5).map(projMini).join("") || `<p class="empty">No projects yet.</p>`}</section>
-      <section class="sec">${secHead("Flight path", `<a class="link" href="#path">Open</a>`)}${upNext()}</section>
-      <section class="sec" data-drop="day" data-date="">${secHead("Inbox", `<span class="count tc">${inbox.length}</span>`)}${inbox.length ? taskList(inbox.slice(0, 5), { date: false }) + (inbox.length > 5 ? `<a class="link more" href="#tasks">${inbox.length - 5} more in Tasks</a>` : "") : `<p class="empty">Empty. Tasks with no date land here.</p>`}<p class="hint">Drag a task onto the schedule to give it a time.</p></section>
-    </div>`;
+    /* 3. projects */
+    const ps = projects().filter(p => p.status !== "landed").slice(0, 4);
+    h += `<section class="cs cs-body${rv("h-projects")}" id="h-projects" aria-label="Projects">
+      <div class="cs-bg dim" aria-hidden="true"><img src="img/steel.jpg" alt=""></div>
+      <div class="cs-shade heavy"></div>
+      <div class="cs-wrap">
+        <header class="cs-head rv"><h2>Projects</h2><a class="link" href="#projects">All projects</a></header>
+        <div class="body-grid">
+          <div class="pgrid home-pgrid rv" style="--d:1">${ps.map(projTile).join("") || `<p class="empty">No projects yet.</p>`}</div>
+          <div class="sec inbox rv" style="--d:2" data-drop="day" data-date=""><p class="lbl">Inbox <span class="count">${inbox.length || ""}</span></p>
+            ${inbox.length ? taskList(inbox.slice(0, 6), { date: false }) + (inbox.length > 6 ? `<a class="link more" href="#tasks">${inbox.length - 6} more</a>` : "") : `<p class="empty">Empty. Tasks with no date land here.</p>`}
+          </div>
+        </div>
+      </div>
+    </section>`;
+
+    /* 4. the route */
+    h += `<section class="cs cs-route${rv("h-route")}" id="h-route" aria-label="The route">
+      <div class="cs-wrap">
+        <header class="cs-head rv"><h2>The route</h2><a class="link" href="#path">Open the flight path</a></header>
+        <div class="rv" style="--d:1">${J.strip(pathItems())}</div>
+        <div class="route-next rv" style="--d:2">${upNext()}</div>
+      </div>
+    </section>`;
+
+    /* 5. the star */
+    const skills = S.list("skills");
+    h += `<section class="cs cs-star${rv("h-star")}" id="h-star" aria-label="Where it's all going">
+      <div class="cs-bg" aria-hidden="true"><img src="img/space.jpg" alt=""></div>
+      <div class="cs-shade star"></div>
+      <div class="cs-wrap">
+        <header class="cs-head rv"><h2>Where it's all going</h2><a class="link" href="#star">All skills</a></header>
+        <ol class="star-list rv" style="--d:1">${skills.slice(0, 4).map(s => `<li class="${s.goal ? "goal" : ""}"><span class="sk-eta">${esc(s.eta)}</span><b>${esc(s.name)}</b><em>${esc(s.why || s.detail)}</em></li>`).join("") || `<li class="empty">Add the skills you're aiming at on the flight path.</li>`}</ol>
+        <a class="btn film-btn rv" style="--d:2" href="#film">${J.icon.film}Watch the full film</a>
+      </div>
+    </section></div>`;
     return h;
   };
+
+  /* After Home is drawn: reveal scenes once, light the rocket part in view, drift the photos. */
+  const HOMEFX = { io: null, raf: 0, ratios: {} };
+  function homeAfter() {
+    if (HOMEFX.io) HOMEFX.io.disconnect();
+    cancelAnimationFrame(HOMEFX.raf);
+    if (UI.view !== "home") return;
+    const secs = SCENES.map(([id]) => document.getElementById(id)).filter(Boolean);
+    HOMEFX.io = new IntersectionObserver(entries => {
+      entries.forEach(en => {
+        HOMEFX.ratios[en.target.id] = en.intersectionRatio;
+        if (en.isIntersecting && en.intersectionRatio > .12 && !UI.revealed.has(en.target.id)) { UI.revealed.add(en.target.id); en.target.classList.add("in"); }
+      });
+      let best = null, bestR = 0;
+      SCENES.forEach(([id, part]) => { const r = HOMEFX.ratios[id] || 0; if (r > bestR) { bestR = r; best = part; } });
+      if (best) lightRocket(best);
+    }, { threshold: [0, .12, .25, .5, .75, 1] });
+    secs.forEach(s => HOMEFX.io.observe(s));
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { secs.forEach(s => { UI.revealed.add(s.id); s.classList.add("in"); }); return; }
+    const bgs = secs.map(s => ({ s, bg: $(".cs-bg", s) })).filter(x => x.bg);
+    const tick = () => {
+      if (UI.view !== "home") return;
+      const vh = innerHeight;
+      bgs.forEach(({ s, bg }) => {
+        const r = s.getBoundingClientRect();
+        if (r.bottom < -50 || r.top > vh + 50) return;
+        const p = (vh - r.top) / (vh + r.height);               // 0 entering … 1 leaving
+        bg.style.transform = `translate3d(0, ${((p - .5) * -70).toFixed(1)}px, 0) scale(${(1.08 - p * .05).toFixed(3)})`;
+      });
+      HOMEFX.raf = requestAnimationFrame(tick);
+    };
+    HOMEFX.raf = requestAnimationFrame(tick);
+  }
+  function lightRocket(part) {
+    $$(".side-rocket .rp").forEach(g => g.classList.toggle("on", g.dataset.part === part));
+    const lab = $("#rocketLabel"); if (lab && !lab.matches(":hover")) lab.textContent = J.PART_LABEL[part] || "";
+  }
+  function homeScrollTo(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    scrollTo({ top: el.getBoundingClientRect().top + scrollY - (id === "h-launch" ? 0 : 8), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+  /* The rocket in the sidebar: on Home it jumps between scenes; elsewhere it opens that part's view. */
+  const PART_VIEW = { exhaust: "log", engines: "home", body: "projects", command: "path", star: "star" };
+  function rocketGo(part) {
+    if (UI.view === "home") { homeScrollTo((SCENES.find(s => s[1] === part) || [])[0]); return; }
+    if (part === "engines") { UI.homeTarget = "h-today"; go("home"); return; }
+    location.hash = PART_VIEW[part];
+  }
 
   function homeSchedule() {
     const d = UI.homeDay, sent = sentIds();
@@ -483,25 +592,23 @@
     const max = Math.max(4, ...data.map(x => x.plan));
     return `<div class="wbars">${data.map(x => `<div class="wb${x.d === J.today() ? " today" : ""}" data-drop="day" data-date="${x.d}" title="${J.fmtDate(x.d)}: ${x.plan.toFixed(1)} h planned, ${x.done.toFixed(1)} h done">` +
       `<div class="wb-col"><i class="plan" style="height:${x.plan / max * 100}%"></i><i class="done" style="height:${x.done / max * 100}%"></i></div>` +
-      `<span class="wb-d">${J.DAY[J.dow(x.d)].slice(0, 2)}</span><span class="wb-n tc">${x.plan ? x.plan.toFixed(x.plan % 1 ? 1 : 0) : "·"}</span></div>`).join("")}</div>
-      <p class="hint"><b class="fuel tc">${fuelText()}</b> Outline: hours planned. Filled: hours done. Drop a task on a day to move it there.</p>`;
+      `<span class="wb-d">${J.DAY[J.dow(x.d)].slice(0, 2)}</span><span class="wb-n tc">${x.plan ? x.plan.toFixed(x.plan % 1 ? 1 : 0) + " h" : ""}</span></div>`).join("")}</div>
+      <p class="hint">${fuelText()} Drop a task on a day to move it there.</p>`;
   }
   function fuelText() {
     const ws = J.weekStart(J.today()), we = J.addDays(ws, 6), goal = S.meta().fuelGoal || 10;
     const h = allTasks().filter(t => isDone(t) && t.doneAt && J.ymd(new Date(t.doneAt)) >= ws && J.ymd(new Date(t.doneAt)) <= we).reduce((s, t) => s + (t.dur || 0), 0) / 60;
-    return `${h.toFixed(1)} of ${goal} h done this week.`;
-  }
-  function projMini(p) {
-    const pr = progressOf(p.id), nx = nextTaskOf(p.id);
-    return `<button type="button" class="pmini" data-act="openProject" data-id="${p.id}"><span class="pm-top"><i class="sw" style="--c:${cvar(p.color)}"></i><b>${esc(p.name)}</b><span class="tc">${pr.pct}%</span></span>` +
-      `<span class="bar"><i style="width:${pr.pct}%;background:${cvar(p.color)}"></i></span><span class="pm-next">${nx ? "Next: " + esc(short(nx.title, 44)) : pr.total ? "All done" : "No tasks yet"}</span></button>`;
+    return `${h.toFixed(h % 1 ? 1 : 0)} of ${goal} hours done this week.`;
   }
   function upNext() {
     const today = J.today(), items = pathItems();
     const now = items.filter(x => x.kind === "period" && x.from <= today && x.to >= today);
-    const next = items.filter(x => (x.kind === "event" ? x.at : x.from) > today).slice(0, 3);
-    const row = (x, isNow) => `<a class="pnext" href="#path" data-act="pathTo" data-id="${x.id}"><span class="tc">${isNow ? "NOW" : "T–" + J.daysUntil(x.kind === "event" ? x.at : x.from)}</span><span><b>${esc(x.title)}${x.estimate ? ' <span class="est" title="Estimated date">≈</span>' : ""}</b><em>${isNow ? periodProgress(x) : esc(fmtSpan(x))}</em></span></a>`;
-    return (now.map(x => row(x, true)).join("") + next.map(x => row(x, false)).join("")) || `<p class="empty">Nothing ahead yet.</p>`;
+    const next = items.filter(x => (x.kind === "event" ? x.at : x.from) > today).slice(0, 4 - Math.min(now.length, 1));
+    const row = (x, isNow) => {
+      const n = J.daysUntil(x.kind === "event" ? x.at : x.from);
+      return `<a class="pnext${isNow ? " now" : ""}" href="#path" data-act="pathTo" data-id="${x.id}"><span class="pn-n">${isNow ? "Now" : n === 1 ? "Tomorrow" : `${n} days`}</span><b>${esc(x.title)}${x.estimate ? ' <span class="est" title="Estimated date">≈</span>' : ""}</b><em>${isNow ? periodProgress(x) : esc(fmtSpan(x))}</em></a>`;
+    };
+    return (now.slice(0, 1).map(x => row(x, true)).join("") + next.map(x => row(x, false)).join("")) || `<p class="empty">Nothing ahead yet.</p>`;
   }
   function emptyWelcome() {
     return `<section class="welcome"><h2>Jules is empty</h2><p>Your synced space has no data yet. Load the starter data that came with Jules, or start from a blank slate.</p>
@@ -621,6 +728,63 @@
     return `<div class="month"><div class="mh">${J.DAY.map(x => `<span>${x}</span>`).join("")}</div><div class="mg" style="--weeks:${weeks}">${cells}</div></div>`;
   }
 
+  /* ---------------- MAIL: the inbox, with Claude marking what needs a reply ---------------- */
+  function mailLine() {
+    const Mx = J.mail;
+    if (Mx.state !== "ok") return "";
+    const n = Mx.counts().reply;
+    return n ? ` <a class="link mail-line" href="#mail">${plural(n, "email needs", "emails need")} a reply</a>` : "";
+  }
+  function mailWhen(ts) {
+    if (!ts) return "";
+    const d = new Date(ts), ymd = J.ymd(d);
+    if (ymd === J.today()) return J.fmtTime(d.getHours() * 60 + d.getMinutes());
+    if (J.diffDays(ymd, J.today()) < 7) return J.relDay(ymd);
+    return J.fmtDate(ymd, { noDay: true });
+  }
+  function mailRow(m, reply) {
+    const v = J.mail.verdict(m.id);
+    return `<div class="mrow${m.unread ? " unread" : ""}" title="${esc(v && v.why ? "Claude: " + v.why : "")}">
+      <div class="m-main">
+        <div class="m-top"><span class="m-from">${esc(m.fromName || m.fromEmail || "Unknown")}</span><span class="m-when tc">${esc(mailWhen(m.ts))}</span></div>
+        <span class="m-subj">${esc(m.subject)}</span>
+        ${m.snippet ? `<span class="m-snip">${esc(short(m.snippet, 140))}</span>` : ""}
+      </div>
+      <div class="m-act">
+        <button type="button" class="btn sm" data-act="mailTask" data-id="${esc(m.id)}">Make a task</button>
+        <a class="btn sm" href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">Open ${J.icon.ext}</a>
+        ${v ? `<button type="button" class="link" data-act="mailFlip" data-id="${esc(m.id)}">${reply ? "Doesn't need a reply" : "Needs a reply"}</button>` : ""}
+      </div>
+    </div>`;
+  }
+  function mailToTask(id) {
+    const m = J.mail.items.find(x => x.id === id);
+    if (!m) return;
+    const t = A.add({ title: short(`Reply to ${m.fromName || m.fromEmail}: ${m.subject}`, 120), due: J.today(), notes: `From ${m.fromName}${m.fromEmail ? " <" + m.fromEmail + ">" : ""}\n\n[Open the email](${m.url})` });
+    TD.open(t.id, { focusTitle: true });
+  }
+  V.mail = () => {
+    const Mx = J.mail, d = Mx.describe();
+    Mx.ensure();
+    const c = Mx.counts();
+    let h = viewHead("Mail", Mx.state === "ok" ? `${plural(c.total, "recent email")} in your inbox${c.reply ? `, <b class="hl">${c.reply} need${c.reply === 1 ? "s" : ""} a reply</b>` : ""}.` : "Your inbox, with Claude marking which emails need a reply.",
+      Mx.state === "ok" ? `<button type="button" class="btn" data-act="mretry">Refresh</button>` : "");
+    if (d.tone !== "ok") h += `<p class="gnote ${d.tone}">${esc(d.text)}${d.action === "approve" ? ` <button type="button" class="link" data-act="mapprove">Allow</button>` : d.action === "retry" ? ` <button type="button" class="link" data-act="mretry">Try again</button>` : ""}</p>`;
+    if (Mx.state === "ok" || Mx.state === "stale") {
+      const reply = Mx.items.filter(m => Mx.needsReply(m));
+      const rest = Mx.items.filter(m => !Mx.needsReply(m));
+      if (Mx.sorting) h += `<p class="gnote busy">Claude is reading the new emails…</p>`;
+      else if (c.unsorted && Mx.canSort) h += `<p class="gnote">${plural(c.unsorted, "email hasn't", "emails haven't")} been sorted yet. <button type="button" class="link" data-act="mailSort">Sort with Claude</button></p>`;
+      if (Mx.sortErr && Mx.sortErr !== "cancelled") h += `<p class="gnote warn">${Mx.sortErr === "not_granted" ? "Claude wasn't allowed to sort your mail, so everything is listed together. You can allow it next time claude.ai asks." : Mx.sortErr === "rate_limited" ? "Claude is busy right now. Try sorting again in a minute." : "Sorting didn't work this time."}</p>`;
+      h += `<section class="mgroup"><h2 class="grp-h"><span>Needs a reply</span><span class="count">${reply.length}</span></h2>${reply.length ? reply.map(m => mailRow(m, true)).join("") : `<p class="empty sm">${c.unsorted ? "Waiting to be sorted." : "Nothing waiting on you."}</p>`}</section>`;
+      const shown = UI.mailAll ? rest : rest.slice(0, 12);
+      h += `<section class="mgroup rest"><h2 class="grp-h"><span>Everything else</span><span class="count">${rest.length}</span></h2>${shown.map(m => mailRow(m, false)).join("")}${rest.length > shown.length ? `<button type="button" class="link more" data-act="mailMore">Show ${rest.length - shown.length} more</button>` : ""}</section>`;
+    }
+    h += `<section class="mgroup soon"><h2 class="grp-h"><span>UNSW mail</span></h2><p class="empty sm">Your student email is Outlook. When your UNSW account exists (around O-Week), connect Microsoft 365 in claude.ai and it can join this view.</p></section>`;
+    h += `<p class="hint">Read only: Jules never sends, drafts, archives or deletes email. Claude sees only the sender, subject, date and preview of new emails, once each.</p>`;
+    return h;
+  };
+
   /* ---------------- PROJECTS: the body of the rocket ---------------- */
   V.projects = () => {
     if (UI.project && project(UI.project)) return projectPage(project(UI.project));
@@ -638,7 +802,7 @@
   function projTile(p) {
     const pr = progressOf(p.id), nx = nextTaskOf(p.id);
     return `<button type="button" class="ptile" data-act="openProject" data-id="${p.id}" style="--c:${cvar(p.color)}">
-      <span class="pt-top"><span class="pt-status">${esc(STATUS_SHORT[p.status] || "")}</span><span class="tc pt-pct">${J.pad2(pr.pct)}%</span></span>
+      <span class="pt-top"><span class="pt-status">${esc(STATUS_SHORT[p.status] || "")}</span><span class="tc pt-pct">${pr.pct}%</span></span>
       <b class="pt-name">${esc(p.name)}</b>
       <span class="bar"><i style="width:${pr.pct}%"></i></span>
       <span class="pt-meta">${pr.manual ? "No tasks yet" : `${pr.done} of ${pr.total} done`}</span>
@@ -657,7 +821,7 @@
           <button type="button" class="btn danger sm" data-act="delProject">Delete project</button>
         </div>
       </header>
-      <div class="pp-prog" style="--c:${cvar(p.color)}"><span class="tc big">${J.pad2(pr.pct)}%</span><span class="bar lg"><i style="width:${pr.pct}%"></i></span>
+      <div class="pp-prog" style="--c:${cvar(p.color)}"><span class="tc big">${pr.pct}%</span><span class="bar lg"><i style="width:${pr.pct}%"></i></span>
         <span class="pp-pm">${pr.manual ? `No tasks yet, so progress is set by hand: <input type="range" min="0" max="100" step="5" value="${pr.pct}" data-pfield="progress" aria-label="Progress">` : `${pr.done} of ${pr.total} tasks done`}</span></div>
       <div class="pp-grid">
         <section class="sec">${secHead("Tasks", `<span class="count tc">${open.length} open</span>`)}
@@ -711,7 +875,7 @@
       }
     });
     const t = J.today(), nowX = (+t.slice(0, 4) >= y0 && +t.slice(0, 4) <= y1) ? pos(t) : null;
-    return `<div class="strip${o.cls ? " " + o.cls : ""}"><div class="sp-track">${segs}${ticks}${nowX != null ? `<span class="sp-now" style="left:${nowX}%"><em class="tc">NOW</em></span>` : ""}</div>` +
+    return `<div class="strip${o.cls ? " " + o.cls : ""}"><div class="sp-track">${segs}${ticks}${nowX != null ? `<span class="sp-now" style="left:${nowX}%"><em>Now</em></span>` : ""}</div>` +
       `<div class="sp-years">${Array.from({ length: n }, (_, i) => `<button type="button" class="sp-y" data-act="pathYear" data-year="${y0 + i}" style="width:${100 / n}%"><span class="tc">${y0 + i}</span></button>`).join("")}</div></div>`;
   };
 
@@ -747,7 +911,7 @@
         <span class="rowtools"><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${J.icon.up}</button><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="1" aria-label="Move down" ${i === skills.length - 1 ? "disabled" : ""}>${J.icon.down}</button><button type="button" class="ibtn" data-act="editSkill" data-id="${s.id}" aria-label="Edit ${esc(s.name)}">${J.icon.edit}</button></span></li>`).join("") || `<li class="empty">No skills yet.</li>`}</ol></section>`;
     return h;
   };
-  function nowRow() { return `<li class="tr now-row" id="path-now"><span class="tr-date tc">${esc(J.fmtDate(J.today(), { noDay: true }))}</span><span class="tr-mark"></span><span class="tr-body"><b class="tc">NOW</b></span></li>`; }
+  function nowRow() { return `<li class="tr now-row" id="path-now"><span class="tr-date tc">${esc(J.fmtDate(J.today(), { noDay: true }))}</span><span class="tr-mark"></span><span class="tr-body"><b>Now</b></span></li>`; }
   function pathRow(x) {
     const st = stateOf(x);
     const courses = (x.courses || []).map(c => `<button type="button" class="course${UI.openCourse === x.id + c.code ? " on" : ""}" data-act="course" data-key="${esc(x.id + c.code)}" aria-expanded="${UI.openCourse === x.id + c.code}">${esc(c.code)}</button>`).join("");
@@ -830,7 +994,7 @@
         <div class="seg" role="radiogroup" aria-label="Status">${[["todo", "To do"], ["doing", "Doing"], ["done", "Done"]].map(([k, l]) => `<button type="button" role="radio" aria-checked="${t.status === k}" data-dact="status" data-val="${k}">${l}</button>`).join("")}</div>
         <div class="fgrid two">
           <label class="frow"><span class="fl">Date</span><input type="date" id="dwDue" value="${t.due || ""}"></label>
-          <label class="frow"><span class="fl">Time</span><input type="time" id="dwStart" step="300" value="${t.start != null ? J.fmtTime(t.start) : ""}"></label>
+          <label class="frow"><span class="fl">Time</span><input type="time" id="dwStart" step="300" value="${t.start != null ? J.hm(t.start) : ""}"></label>
           <div class="frow full quick">${[["Today", J.today()], ["Tomorrow", J.addDays(J.today(), 1)], ["Next week", J.addDays(J.weekStart(J.today()), 7)], ["No date", ""]].map(([l, v]) => `<button type="button" class="link" data-dact="due" data-val="${v}">${l}</button>`).join("")}</div>
           <label class="frow"><span class="fl">Duration</span><select id="dwDur">${durOpts.map(([v, l]) => `<option value="${v}" ${String(t.dur || "") === String(v) ? "selected" : ""}>${l}</option>`).join("")}</select></label>
           <label class="frow"><span class="fl">Repeat</span><select id="dwRepeat">${[["", "Never"], ["daily", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"]].map(([v, l]) => `<option value="${v}" ${String(t.repeat || "") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
@@ -1033,7 +1197,7 @@
     });
   }
   function showKeys() {
-    const rows = [["1 – 6", "Home, Tasks, Calendar, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["Esc", "Close whatever's open"]];
+    const rows = [["1 – 7", "Home, Tasks, Calendar, Mail, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["Esc", "Close whatever's open"]];
     J.form.open({ eyebrow: "Help", title: "Keyboard", value: {}, fields: [{ key: "k", type: "html", label: "", html: `<dl class="keys-dl">${rows.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join("")}</dl><p class="fh">Quick add understands: today, tomorrow, mon–sun, next week, 23 nov, 9am, 14:00, 9-11am, 1h, 90m, #project, !, !!, !!!, daily, weekdays, every fri.</p>` }] });
   }
 
@@ -1129,6 +1293,13 @@
       const act = a.dataset.act, id = a.dataset.id;
       switch (act) {
         case "toggle": e.stopPropagation(); A.toggle(id); return;
+        case "homeScroll": e.preventDefault(); homeScrollTo(a.dataset.to); return;
+        case "mailTask": mailToTask(id); return;
+        case "mailFlip": { const v = J.mail.verdict(id); J.mail.setVerdict(id, !(v && v.reply)); return; }
+        case "mailSort": J.mail.sort(); return;
+        case "mailMore": UI.mailAll = true; render(); return;
+        case "mapprove": J.mail.approve(); return;
+        case "mretry": J.mail.refresh(); return;
         case "settings": openSettings(); return;
         case "hero": UI.hero = (UI.hero + 1) % HERO.length; lsSet("hero", UI.hero); render(); return;
         case "homeday": UI.homeDay = +a.dataset.step === 0 ? J.today() : J.addDays(UI.homeDay, +a.dataset.step); render(); return;
@@ -1208,7 +1379,7 @@
     if (typing || e.metaKey || e.ctrlKey || e.altKey || J.overlay.any()) return;
     if (UI.view === "film") return;
     const k = e.key;
-    const vi = ["1", "2", "3", "4", "5", "6"].indexOf(k);
+    const vi = ["1", "2", "3", "4", "5", "6", "7"].indexOf(k);
     if (vi >= 0) { go(ORDER[vi]); return; }
     if (k === "n" || k === "N") { e.preventDefault(); focusQuickAdd(); return; }
     if (k === "/") { e.preventDefault(); PAL.open(); return; }
@@ -1273,14 +1444,15 @@
     const view = $("#view");
     const st = lastRendered === UI.view ? capture() : { scroll: {}, inputs: [] };
     const entering = lastRendered !== UI.view;
+    view.dataset.view = UI.view;
     view.innerHTML = (V[UI.view] || V.home)();
     restore(st);
     scrollTimelines();
+    homeAfter();
     if (entering) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
     lastRendered = UI.view;
     $$(".nav a[data-view]").forEach(a => { a.classList.toggle("on", a.dataset.view === UI.view); a.setAttribute("aria-current", a.dataset.view === UI.view ? "page" : "false"); });
-    const part = (VIEWS_META[UI.view] || {}).part;
-    $$(".side-brand .rp").forEach(g => g.classList.toggle("on", g.dataset.part === part || (UI.view === "path" && g.dataset.part === "star")));
+    if (UI.view !== "home") lightRocket((VIEWS_META[UI.view] || {}).part);
     document.title = `${(VIEWS_META[UI.view] || {}).label || "Jules"} · Jules`;
     syncStatus();
   }
@@ -1300,24 +1472,49 @@
     else location.hash = view;
   }
   J.go = go;
+  let booted = false;
   function route() {
-    let v = location.hash.slice(1);
-    if (v === "star") { v = "path"; setTimeout(() => { const el = $("#path-star"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 80); }
+    let v = location.hash.slice(1), toStar = false;
+    if (v === "star") { v = "path"; toStar = true; }
     if (!VIEWS_META[v] && v !== "film") v = "home";
     const was = UI.view;
-    UI.view = v;
-    J.overlay.closeTop && TD.isOpen() && v === "film" && TD.close();
+    if (was === "home" && v !== "home" && booted) UI.homeScrollY = scrollY;
     if (v === "film") {
+      if (TD.isOpen()) TD.close();
+      UI.view = v;
       $("#app").hidden = true;
       J.film && J.film.enter();
       document.title = "Film · Jules";
       return;
     }
-    if (was === "film" && J.film) J.film.leave();
-    $("#app").hidden = false;
-    if (was !== v && was !== "film") scrollTo(0, 0);
-    render();
+    const show = () => {
+      UI.view = v;
+      if (was === "film" && J.film) J.film.leave();
+      $("#app").hidden = false;
+      render();
+      if (v === "home") {
+        if (UI.homeTarget) { const t = UI.homeTarget; UI.homeTarget = null; requestAnimationFrame(() => homeScrollTo(t)); }
+        else if (was === "home" && booted) homeScrollTo("h-launch");          /* Home pressed while on Home: back to the top */
+        else scrollTo(0, was === "film" ? 0 : (UI.homeScrollY || 0));
+      } else if (was !== v) scrollTo(0, 0);
+      if (toStar) setTimeout(() => { const el = $("#path-star"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 80);
+    };
+    const animate = booted && was !== v && was !== "film";
+    booted = true;
+    if (animate) J.cut(VIEWS_META[v].label, show); else show();
   }
+
+  /* The cut: a quick letterbox shutter between views, with the view's name in the gap. */
+  let cutBusy = false;
+  J.cut = (label, fn) => {
+    const el = $("#cut");
+    if (cutBusy || !el || matchMedia("(prefers-reduced-motion: reduce)").matches) { fn(); return; }
+    cutBusy = true;
+    $(".cut-label", el).textContent = label;
+    el.classList.remove("open"); el.classList.add("on");
+    setTimeout(() => { fn(); el.classList.add("open"); }, 230);
+    setTimeout(() => { el.classList.remove("on", "open"); cutBusy = false; }, 640);
+  };
 
   /* The warp: a burst of streaks used for jumps between the app and the film. */
   J.warp = (mid, done) => {
@@ -1355,10 +1552,18 @@
 
   /* ---------------- start up ---------------- */
   function buildShell() {
-    $("#sideBrand").innerHTML = J.rocketSVG() + `<span class="brand-word">Jules</span>`;
+    $("#sideBrand").innerHTML = `<div class="side-rocket">${J.rocketSVG("", true)}</div><div class="brand-txt"><a class="brand-word" href="#home">Jules</a><span class="rocket-label" id="rocketLabel" aria-live="polite"></span></div>`;
+    const lab = $("#rocketLabel");
+    $$(".side-rocket .rp").forEach(g => {
+      const part = g.dataset.part;
+      g.addEventListener("click", () => rocketGo(part));
+      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); rocketGo(part); } });
+      g.addEventListener("mouseenter", () => { lab.textContent = J.PART_LABEL[part]; lab.classList.add("hov"); });
+      g.addEventListener("mouseleave", () => { lab.classList.remove("hov"); const on = $(".side-rocket .rp.on"); lab.textContent = on ? J.PART_LABEL[on.dataset.part] : ""; });
+    });
     const nav = ORDER.map(v => `<a href="#${v}" data-view="${v}"><span class="ni">${J.icon[v]}</span><span class="nl">${VIEWS_META[v].label}</span><kbd>${VIEWS_META[v].key}</kbd></a>`).join("");
     $("#sideNav").innerHTML = nav;
-    $("#tabbar").innerHTML = ORDER.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v]}<span>${v === "path" ? "Path" : v === "log" ? "Log" : VIEWS_META[v].label}</span></a>`).join("");
+    $("#tabbar").innerHTML = ORDER.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v]}<span>${v === "path" ? "Path" : v === "log" ? "Log" : v === "calendar" ? "Cal" : VIEWS_META[v].label}</span></a>`).join("");
     $("#sideSearch").innerHTML = `${J.icon.search}<span>Search or do</span><kbd>⌘K</kbd>`;
     $("#sideSearch").addEventListener("click", () => PAL.open());
     $("#sideSettings").innerHTML = `${J.icon.gear}<span>Settings</span>`;
@@ -1369,10 +1574,11 @@
   /* A missing header photo (e.g. on GitHub, where photos aren't included) just disappears. */
   document.addEventListener("error", e => { if (e.target && e.target.classList && e.target.classList.contains("hero-img")) e.target.remove(); }, true);
   buildShell();
-  $("#view").innerHTML = `<div class="loading"><span class="tc">T–0</span> Loading mission control…</div>`;
+  $("#view").innerHTML = `<div class="loading">Loading…</div>`;
   let routed = false;
   S.on(() => { if (!routed) return; if (UI.view !== "film") render(); else syncStatus(); });
   G.on(() => { if (routed && (UI.view === "home" || UI.view === "calendar")) render(); });
+  J.mail.on(() => { if (routed && (UI.view === "home" || UI.view === "mail")) render(); });
   addEventListener("hashchange", route);
   let lastDay = J.today(), resizeT;
   addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (UI.view === "calendar") render(); }, 200); });

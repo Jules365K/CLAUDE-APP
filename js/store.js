@@ -12,7 +12,7 @@
 (function () {
   "use strict";
   const J = window.J;
-  const COLS = ["tasks", "projects", "path", "skills", "log", "meta"];
+  const COLS = ["tasks", "projects", "path", "skills", "log", "meta", "mail"];
   const LS = "jules5:";
   const cache = {}; COLS.forEach(c => { cache[c] = new Map(); });
   const listeners = new Set();
