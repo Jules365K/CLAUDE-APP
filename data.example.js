@@ -1,4 +1,4 @@
-/* Example mission data for Ascent (public placeholder).
+/* Example mission data for Jules (public placeholder).
    Copy this file to data.js and put your own details there. data.js is git-ignored,
    so your personal data never ends up in a public repo. Months are 0-based (0 = Jan, 11 = Dec). */
 window.ASCENT_DATA = window.ASCENT_DATA || {
@@ -52,32 +52,54 @@ window.ASCENT_DATA = window.ASCENT_DATA || {
       ["2026", "Final school exams complete", "Your subjects here"],
       ["2026", "University offer", "Your degree here"]
     ]},
-    { group: "Engineering and competitions", items: [
-      ["2026", "An engineering challenge", "Where and how it went"]
-    ]},
-    { group: "Leadership and making", items: [
-      ["2 yrs", "A team you led", "What you did"]
-    ]}
+    { group: "Engineering and competitions", items: [["2026", "An engineering challenge", "Where and how it went"]] },
+    { group: "Leadership and making", items: [["2 yrs", "A team you led", "What you did"]] }
   ],
 
-  path: [
-    { yr: 2025, d: "2025",        t: "Advanced maths",      s: "A subject you pushed early", past: true },
-    { yr: 2026, d: "2026",        t: "Competition win",     s: "Something you built", past: true },
-    { yr: 2026, d: "2026",        t: "University offer",    s: "Your degree", past: true },
-    { yr: 2026, d: "Late 2026",    t: "School complete",     s: "Final exams done", past: true },
-    { yr: 2026, d: "Now",         t: "Ascent online",       s: "Prep starts here", now: true },
-    { yr: 2026, d: "2 Dec",       t: "Summer trip",         s: "Reading only" },
-    { yr: 2027, d: "Summer",      t: "Prep burn",           s: "Complex numbers, vectors, matrices · CS50x" },
-    { yr: 2027, d: "8 Feb 2027",  t: "O-Week",              s: "Find a student team" },
-    { yr: 2027, d: "15 Feb 2027", t: "Term 1",              c: ["DESN1000", "PHYS1121", "MATH1131"] },
-    { yr: 2027, d: "Mid 2027",    t: "Term 2",              c: ["MATH1231", "MMAN1130"] },
-    { yr: 2027, d: "Late 2027",   t: "Term 3",              c: ["ENGG1300", "ELEC1111", "COMP1511"] },
-    { yr: 2028, d: "2028",        t: "Year 2",              s: "UNSW switches to semesters", c: ["MATH2019", "MMAN2700", "ENGG2400", "ENGG2500", "MMAN2300"] },
-    { yr: 2029, d: "2029",        t: "Year 3 · aero core",  c: ["AERO3410", "AERO3630", "AERO3660", "AERO3110", "MMAN3200"] },
-    { yr: 2029, d: "Summer",      t: "Industrial training", s: "60 days · ENGG4999" },
-    { yr: 2030, d: "2030",        t: "Year 4 · thesis",     c: ["MMAN4951–53", "AERO4620", "AERO4110"] },
-    { yr: 2030, d: "End 2030",    t: "BE (Hons) Aerospace", s: "Graduate. On to the star.", goal: true }
-  ],
+  board: {
+    note: "Semester dates from 2028 are indicative: UNSW switches to two semesters a year in 2028.",
+    rows: [
+      { yr: 2026,
+        notes: [["2025", "Advanced maths"], ["2026", "Competition win"], ["2026", "University offer"]],
+        bars: [
+          { from: "2026-10-13", to: "2026-11-06", t: "Final exams" },
+          { from: "2026-12-04", to: "2026-12-31", t: "Prep burn", s: "Complex numbers, vectors, CS50x" }
+        ],
+        marks: [
+          { at: "2026-11-06", t: "School complete" },
+          { at: "2026-12-02", t: "Summer trip" },
+          { at: "2026-12-17", t: "Results", s: "expected mid-Dec" }
+        ] },
+      { yr: 2027,
+        bars: [
+          { from: "2027-01-01", to: "2027-02-07", t: "Prep burn", s: "Finish before O-Week" },
+          { from: "2027-02-15", to: "2027-05-06", t: "Term 1", c: ["DESN1000", "PHYS1121", "MATH1131"] },
+          { from: "2027-05-31", to: "2027-08-26", t: "Term 2", c: ["MATH1231", "MMAN1130"] },
+          { from: "2027-09-13", to: "2027-12-09", t: "Term 3", c: ["ENGG1300", "ELEC1111", "COMP1511"] }
+        ],
+        marks: [{ at: "2027-02-08", t: "O-Week", s: "Find a student team" }] },
+      { yr: 2028,
+        bars: [
+          { from: "2028-02-21", to: "2028-06-16", t: "Semester 1", c: ["MATH2019", "MATH2089", "MMAN2700"] },
+          { from: "2028-07-24", to: "2028-11-17", t: "Semester 2", c: ["ENGG2400", "ENGG2500", "MMAN2300"] }
+        ],
+        marks: [{ at: "2028-02-21", t: "Semesters begin", s: "New UNSW calendar" }] },
+      { yr: 2029,
+        bars: [
+          { from: "2029-02-19", to: "2029-06-15", t: "Semester 1 · aero core", c: ["AERO3410", "AERO3630", "AERO3660"] },
+          { from: "2029-07-23", to: "2029-11-16", t: "Semester 2", c: ["AERO3110", "MMAN3200", "DESN3000"] },
+          { from: "2029-12-03", to: "2029-12-31", t: "Industrial training" }
+        ],
+        marks: [] },
+      { yr: 2030,
+        bars: [
+          { from: "2030-01-01", to: "2030-02-14", t: "Industrial training", s: "60 days · ENGG4999" },
+          { from: "2030-02-18", to: "2030-06-14", t: "Semester 1 · thesis", c: ["MMAN4951", "AERO4620"] },
+          { from: "2030-07-22", to: "2030-11-15", t: "Semester 2", c: ["MMAN4952–53", "AERO4110"] }
+        ],
+        marks: [{ at: "2030-12-10", t: "BE (Hons) Aerospace", s: "Graduate", goal: true }] }
+    ]
+  },
 
   year1: [
     { term: "Term 1 · from 15 Feb", c: [["DESN1000", "Engineering Design and Innovation"], ["PHYS1121", "Physics 1A (or Higher, 1131)"], ["MATH1131", "Mathematics 1A (or Higher, 1141)"]] },
