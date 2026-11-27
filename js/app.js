@@ -447,6 +447,7 @@
         <div class="launch-l">
           <p class="cs-kicker rv">${esc(J.fmtDate(today, { long: true }))} · <span id="clock">${J.fmtTime(nm)}</span></p>
           <h1 class="cs-title rv" style="--d:1">${greet}${meta.name ? ", " + esc(meta.name) : ""}</h1>
+          ${briefLine()}
           <p class="cs-sub rv" style="--d:2">${summary}${overdue.length ? ` <a class="late" href="#h-today" data-act="homeScroll" data-to="h-today">${overdue.length} overdue.</a>` : ""}</p>
         </div>
         ${lead ? `<div class="launch-r rv" style="--d:3">
@@ -522,7 +523,28 @@
   };
 
   /* After Home is drawn: reveal scenes once, light the rocket part in view, drift the photos. */
-  const HOMEFX = { io: null, raf: 0, ratios: {} };
+  const HOMEFX = { io: null, raf: 0, ratios: {}, gl: null, glCanvas: null, glSrc: "", mouse: [0, 0], mouseT: [0, 0] };
+  addEventListener("pointermove", e => { if (e.pointerType === "mouse") { HOMEFX.mouseT[0] = e.clientX / innerWidth * 2 - 1; HOMEFX.mouseT[1] = e.clientY / innerHeight * 2 - 1; } }, { passive: true });
+  /* The launch photo gets real depth: one WebGL canvas, kept across redraws and moved into each new page. */
+  function heroDepth() {
+    const bg = $(".cs-launch .cs-bg");
+    if (!bg || !J.depthRenderer || matchMedia("(prefers-reduced-motion: reduce)").matches) return null;
+    if (!HOMEFX.glCanvas) {
+      HOMEFX.glCanvas = document.createElement("canvas");
+      HOMEFX.glCanvas.className = "cs-gl";
+      try { HOMEFX.gl = J.depthRenderer(HOMEFX.glCanvas, .011); } catch (e) { HOMEFX.gl = null; }
+    }
+    if (!HOMEFX.gl) return null;
+    bg.appendChild(HOMEFX.glCanvas);
+    const H = HERO[UI.hero % HERO.length];
+    if (HOMEFX.glSrc !== H.img) {
+      HOMEFX.glSrc = H.img;
+      HOMEFX.glCanvas.classList.remove("ready");
+      HOMEFX.gl.setSource({ img: H.img, depth: H.img.replace(/\.jpg$/, "-depth.png") }).then(() => HOMEFX.glCanvas.classList.add("ready")).catch(() => {});
+    } else if (HOMEFX.gl.ready) HOMEFX.glCanvas.classList.add("ready");
+    const [fx, fy] = H.pos.split(" ").map(v => parseFloat(v) / 100);
+    return { focus: [fx, fy] };
+  }
   function homeAfter() {
     if (HOMEFX.io) HOMEFX.io.disconnect();
     cancelAnimationFrame(HOMEFX.raf);
@@ -539,10 +561,21 @@
     }, { threshold: [0, .12, .25, .5, .75, 1] });
     secs.forEach(s => HOMEFX.io.observe(s));
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) { secs.forEach(s => { UI.revealed.add(s.id); s.classList.add("in"); }); return; }
-    const bgs = secs.map(s => ({ s, bg: $(".cs-bg", s) })).filter(x => x.bg);
-    const tick = () => {
+    const depth = heroDepth(), launch = $("#h-launch");
+    const bgs = secs.map(s => ({ s, bg: $(".cs-bg", s) })).filter(x => x.bg && !(depth && x.s.id === "h-launch"));
+    const tick = now => {
       if (UI.view !== "home") return;
       const vh = innerHeight;
+      if (depth && launch) {
+        const r = launch.getBoundingClientRect();
+        if (r.bottom > 0) {
+          const m = HOMEFX.mouse, idle = !HOMEFX.mouseT[0] && !HOMEFX.mouseT[1];
+          const tx = idle ? Math.sin(now * .00021) * .35 : HOMEFX.mouseT[0], ty = idle ? Math.cos(now * .00017) * .2 : HOMEFX.mouseT[1];
+          m[0] += (tx - m[0]) * .045; m[1] += (ty - m[1]) * .045;
+          const p = J.clamp(-r.top / Math.max(1, r.height));
+          HOMEFX.gl.draw({ zoom: 1 + p * .14, focus: depth.focus, center: [.5, depth.focus[1]], mouse: m, dark: p * .25, glow: 0, time: (now / 1000) % 1000, star: null, starI: 0 });
+        }
+      }
       bgs.forEach(({ s, bg }) => {
         const r = s.getBoundingClientRect();
         if (r.bottom < -50 || r.top > vh + 50) return;
@@ -593,7 +626,7 @@
     return `<div class="wbars">${data.map(x => `<div class="wb${x.d === J.today() ? " today" : ""}" data-drop="day" data-date="${x.d}" title="${J.fmtDate(x.d)}: ${x.plan.toFixed(1)} h planned, ${x.done.toFixed(1)} h done">` +
       `<div class="wb-col"><i class="plan" style="height:${x.plan / max * 100}%"></i><i class="done" style="height:${x.done / max * 100}%"></i></div>` +
       `<span class="wb-d">${J.DAY[J.dow(x.d)].slice(0, 2)}</span><span class="wb-n tc">${x.plan ? x.plan.toFixed(x.plan % 1 ? 1 : 0) + " h" : ""}</span></div>`).join("")}</div>
-      <p class="hint">${fuelText()} Drop a task on a day to move it there.</p>`;
+      <p class="hint">${fuelText()}</p>`;
   }
   function fuelText() {
     const ws = J.weekStart(J.today()), we = J.addDays(ws, 6), goal = S.meta().fuelGoal || 10;
@@ -626,7 +659,6 @@
     let h = viewHead("Tasks", `${plural(open.length, "open task")}${open.filter(t => t.due && t.due < J.today()).length ? ` · <span class="late">${open.filter(t => t.due && t.due < J.today()).length} overdue</span>` : ""}`, tools);
     h += quickAdd("tasks", { project: pf !== "all" && pf !== "none" ? pf : "", placeholder: "Add a task… “Essay outline fri 2pm 1h #prep !!”, or just a title for the inbox" });
     h += UI.tasksMode === "board" ? taskBoard(all) : taskGroups(all);
-    h += `<p class="hint keys">Keys: <kbd>N</kbd> new · <kbd>J</kbd>/<kbd>K</kbd> move · <kbd>X</kbd> done · <kbd>Enter</kbd> open · <kbd>Delete</kbd> remove · <kbd>⌘K</kbd> search</p>`;
     return h;
   };
   function taskGroups(all) {
@@ -655,7 +687,7 @@
       let ts = all.filter(t => t.status === k);
       ts = k === "done" ? ts.filter(t => (t.doneAt || 0) > recent).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0)) : ts.sort(byDue);
       return `<section class="bcol" data-drop="status" data-status="${k}"><h2 class="grp-h"><span>${l}</span><span class="count tc">${ts.length}</span></h2>${taskList(ts)}${!ts.length ? `<p class="empty sm">${k === "doing" ? "Drag what you're working on here." : "Empty."}</p>` : ""}</section>`;
-    }).join("")}</div><p class="hint">Done shows the last two weeks. Drag cards between columns.</p>`;
+    }).join("")}</div>`;
   }
 
   /* ---------------- CALENDAR: Google events and your tasks together ---------------- */
@@ -672,7 +704,6 @@
     let h = viewHead("Calendar", esc(label), tools) + gcalNote();
     if (mode === "month") h += calMonth(d);
     else h += `<div class="cal-wrap">${calTray()}${calWeek(mode === "day" ? [d] : Array.from({ length: 7 }, (_, i) => J.addDays(ws, i)))}</div>`;
-    h += `<p class="hint">Drag tasks from the left onto a time. Drag a block's bottom edge to change its length. Click an empty slot to add a task there. Google events are read-only here: Jules adds to Google only when you press “Send to Google” on a task.</p>`;
     return h;
   };
   function calFilter() {
@@ -690,7 +721,7 @@
       (late.length ? `<p class="lbl late">Overdue</p>${taskList(late.slice(0, 6))}` : "") +
       (thisWeek.length ? `<p class="lbl">This week</p>${taskList(thisWeek)}` : "") +
       `<p class="lbl">Inbox</p>${inbox.length ? taskList(inbox.slice(0, 12), { date: false }) : `<p class="empty sm">Empty.</p>`}` +
-      `<p class="hint">Drop a timed task here to clear its time.</p></aside>`;
+      `</aside>`;
   }
   function calWeek(days) {
     const sent = sentIds();
@@ -781,7 +812,7 @@
       h += `<section class="mgroup rest"><h2 class="grp-h"><span>Everything else</span><span class="count">${rest.length}</span></h2>${shown.map(m => mailRow(m, false)).join("")}${rest.length > shown.length ? `<button type="button" class="link more" data-act="mailMore">Show ${rest.length - shown.length} more</button>` : ""}</section>`;
     }
     h += `<section class="mgroup soon"><h2 class="grp-h"><span>UNSW mail</span></h2><p class="empty sm">Your student email is Outlook. When your UNSW account exists (around O-Week), connect Microsoft 365 in claude.ai and it can join this view.</p></section>`;
-    h += `<p class="hint">Read only: Jules never sends, drafts, archives or deletes email. Claude sees only the sender, subject, date and preview of new emails, once each.</p>`;
+    h += `<p class="hint">Read only. Claude sees the sender, subject, date and preview of each new email, once.</p>`;
     return h;
   };
 
@@ -879,53 +910,135 @@
       `<div class="sp-years">${Array.from({ length: n }, (_, i) => `<button type="button" class="sp-y" data-act="pathYear" data-year="${y0 + i}" style="width:${100 / n}%"><span class="tc">${y0 + i}</span></button>`).join("")}</div></div>`;
   };
 
-  V.path = () => {
-    const items = pathItems(), today = J.today();
+  /* ---------------- FLIGHT PATH: two ways to read the route ----------------
+     Planner: one row per year, months across, terms as labelled blocks.
+     Chapters: one card per year, swiped sideways, everything listed inside.
+     Click anything in either to see its details underneath. */
+  UI.pathMode = lsGet("pathMode", innerWidth <= 820 ? "chapters" : "planner");
+  const yearLabelFor = items => {
     const uniStart = (items.find(x => x.kind === "period" && (x.courses || []).length) || {}).from;
     const uy = uniStart ? +uniStart.slice(0, 4) : null;
-    const yearLabel = y => !uy ? "" : y < uy ? "Before uni" : `Year ${y - uy + 1} at uni`;
-    let h = viewHead("Flight path", "The command module: the whole route, from where you are to the degree. Dates marked ≈ are estimates; check them when they're confirmed.",
-      `<button type="button" class="btn" data-act="addPath" data-kind="event">${J.icon.plus}Milestone</button><button type="button" class="btn" data-act="addPath" data-kind="period">${J.icon.plus}Term or period</button>`);
-    h += `<section class="overview">${J.strip(items)}<p class="hint">The whole flight on one line. Click a year or a mark to jump to it.</p></section>`;
+    return y => !uy ? "" : y < uy ? "Before uni" : `Year ${y - uy + 1}`;
+  };
+  const yearBounds = items => {
+    const y0 = +startOf(items[0]).slice(0, 4);
+    const y1 = Math.max(...items.map(x => +(x.kind === "period" ? x.to : x.at).slice(0, 4)));
+    return [y0, y1];
+  };
+  const fracOfYear = (ymd, y) => { const len = J.diffDays(`${y}-01-01`, `${y + 1}-01-01`); return J.clamp(J.diffDays(`${y}-01-01`, ymd) / len, 0, 1); };
 
-    const years = {};
-    items.forEach(x => { const y = startOf(x).slice(0, 4); (years[y] = years[y] || []).push(x); });
-    let nowPlaced = false;
-    h += `<div class="tline">`;
-    Object.keys(years).sort().forEach(y => {
-      h += `<section class="ty" id="year-${y}"><h2 class="ty-h"><span class="tc">${y}</span><em>${esc(yearLabel(+y))}</em></h2><ol class="ty-list">`;
-      years[y].forEach(x => {
-        if (!nowPlaced && startOf(x) > today) { nowPlaced = true; h += nowRow(); }
-        h += pathRow(x);
-      });
-      h += `</ol></section>`;
-    });
-    if (!nowPlaced && items.length) h += `<ol class="ty-list">${nowRow()}</ol>`;
-    h += `</div>`;
-    if (!items.length) h += `<p class="empty">Nothing on the flight path yet. Add terms, exams, trips and big milestones.</p>`;
+  V.path = () => {
+    const items = pathItems();
+    let h = viewHead("Flight path", "From here to the degree. ≈ marks a date that's still an estimate.",
+      tabs("pathMode", UI.pathMode, [["planner", "Planner"], ["chapters", "Chapters"]]) +
+      `<button type="button" class="btn" data-act="addPath" data-kind="event">${J.icon.plus}Milestone</button><button type="button" class="btn" data-act="addPath" data-kind="period">${J.icon.plus}Term</button>`);
+    if (!items.length) return h + `<p class="empty">Nothing on the flight path yet. Add terms, exams, trips and big milestones.</p>`;
+    h += UI.pathMode === "chapters" ? pathChapters(items) : pathPlanner(items);
+    const sel = UI.pathSel && S.get("path", UI.pathSel);
+    h += sel ? pathDetail(sel) : `<p class="pd-hint">Select a term or milestone to see its details.</p>`;
 
-    /* the star: skills */
     const skills = S.list("skills");
-    h += `<section class="star-sec" id="path-star"><div class="shead"><h2><span class="eyebrow-s">The star</span>Skills you're flying toward</h2><button type="button" class="btn" data-act="addSkill">${J.icon.plus}Skill</button></div>
+    h += `<section class="star-sec" id="path-star"><div class="shead"><h2>Skills you're flying toward</h2><button type="button" class="btn" data-act="addSkill">${J.icon.plus}Skill</button></div>
       <ol class="skills">${skills.map((s, i) => `<li class="skill${s.goal ? " goal" : ""}"><span class="tc sk-eta">${esc(s.eta)}</span><div><b>${esc(s.name)}</b>${s.detail ? `<em>${esc(s.detail)}</em>` : ""}${s.why ? `<p>${esc(s.why)}</p>` : ""}</div>
         <span class="rowtools"><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="-1" aria-label="Move up" ${i === 0 ? "disabled" : ""}>${J.icon.up}</button><button type="button" class="ibtn" data-act="moveSkill" data-id="${s.id}" data-dir="1" aria-label="Move down" ${i === skills.length - 1 ? "disabled" : ""}>${J.icon.down}</button><button type="button" class="ibtn" data-act="editSkill" data-id="${s.id}" aria-label="Edit ${esc(s.name)}">${J.icon.edit}</button></span></li>`).join("") || `<li class="empty">No skills yet.</li>`}</ol></section>`;
     return h;
   };
-  function nowRow() { return `<li class="tr now-row" id="path-now"><span class="tr-date tc">${esc(J.fmtDate(J.today(), { noDay: true }))}</span><span class="tr-mark"></span><span class="tr-body"><b>Now</b></span></li>`; }
-  function pathRow(x) {
-    const st = stateOf(x);
-    const courses = (x.courses || []).map(c => `<button type="button" class="course${UI.openCourse === x.id + c.code ? " on" : ""}" data-act="course" data-key="${esc(x.id + c.code)}" aria-expanded="${UI.openCourse === x.id + c.code}">${esc(c.code)}</button>`).join("");
-    const open = (x.courses || []).find(c => UI.openCourse === x.id + c.code);
-    const existing = open && projects().find(p => p.name.startsWith(open.code));
-    return `<li class="tr ${x.kind} ${st}${x.goal ? " goal" : ""}" id="path-${x.id}">
-      <span class="tr-date">${esc(fmtSpan(x))}${x.estimate ? ' <span class="est" title="Estimated">≈</span>' : ""}</span>
-      <span class="tr-mark"></span>
-      <div class="tr-body"><b>${esc(x.title)}</b>${st === "now" && x.kind === "period" ? `<span class="tr-now">${periodProgress(x)}</span>` : ""}${x.sub ? `<em>${esc(x.sub)}</em>` : ""}
-        ${courses ? `<div class="courses">${courses}</div>` : ""}
-        ${open ? `<div class="course-d"><b class="tc">${esc(open.code)}</b> ${esc(open.name || "")}<span class="row">${existing ? `<button type="button" class="link" data-act="openProject" data-id="${existing.id}">Open its project</button>` : `<button type="button" class="link" data-act="courseProject" data-code="${esc(open.code)}" data-name="${esc(open.name || "")}">Start a project for notes and homework</button>`}</span></div>` : ""}
-      </div>
-      <span class="rowtools"><button type="button" class="ibtn" data-act="editPath" data-id="${x.id}" aria-label="Edit ${esc(x.title)}">${J.icon.edit}</button></span>
-    </li>`;
+
+  /* Planner: months across, one row per year. */
+  function pathPlanner(items) {
+    const [y0, y1] = yearBounds(items), today = J.today(), ty = +today.slice(0, 4), yl = yearLabelFor(items);
+    /* roughly how many pixels one percent of the track is, so labels can be measured before they exist */
+    const iw = innerWidth, mob = iw <= 820, pad = Math.max(18, Math.min(44, iw * .03));
+    const pxPct = Math.max(2.4, (Math.min(1240, iw - (mob ? 0 : 236)) - 2 * pad - (iw <= 980 ? 74 : 112)) / 100);
+    const monthsAt = y => J.MON.map((m, i) => [m, fracOfYear(`${y}-${J.pad2(i + 1)}-01`, y) * 100]);
+    let h = `<div class="planner"><div class="pl-row pl-months"><div class="pl-year"></div><div class="pl-track">${monthsAt(ty).map(([m, x]) => `<span style="left:${x}%">${m}</span>`).join("")}</div></div>`;
+    for (let y = y0; y <= y1; y++) {
+      /* periods (cut to this year), packed into lanes */
+      const segs = [];
+      items.filter(x => x.kind === "period" && x.from.slice(0, 4) <= String(y) && x.to.slice(0, 4) >= String(y)).forEach(x => {
+        const a = x.from.slice(0, 4) < String(y) ? 0 : fracOfYear(x.from, y) * 100;
+        const b = x.to.slice(0, 4) > String(y) ? 100 : fracOfYear(J.addDays(x.to, 1), y) * 100;
+        segs.push({ x, a, b, cutL: x.from.slice(0, 4) < String(y), cutR: x.to.slice(0, 4) > String(y) });
+      });
+      const labW = t => (18 + t.length * 6.7) / pxPct;
+      /* pack the blocks themselves first; then a block too narrow for its name puts the name beside it
+         when that space in its lane is free, and otherwise keeps it inside, cut short (hover shows it whole) */
+      const lanes = [];
+      segs.sort((p, q) => p.a - q.a).forEach(s => { let l = lanes.findIndex(e => e <= s.a + .2); if (l < 0) { l = lanes.length; lanes.push(0); } lanes[l] = s.b; s.lane = l; });
+      const taken = (lane, lo, hi, me) => segs.some(o => o !== me && o.lane === lane && o.a < hi && lo < o.b) || segs.some(o => o !== me && o.out && o.lane === lane && o.lo < hi && lo < o.hi);
+      segs.forEach(s => {
+        const lw = labW(s.x.title);
+        if (s.b - s.a >= lw) return;
+        const right = s.b + lw + .6 <= 100 && !taken(s.lane, s.b, s.b + lw + .6, s);
+        const left = !right && s.a - lw - .6 >= 0 && !taken(s.lane, s.a - lw - .6, s.a, s);
+        if (right || left) { s.narrow = s.out = true; s.flip = left; s.lo = left ? s.a - lw - .6 : s.b; s.hi = left ? s.a : s.b + lw + .6; }
+        else if ((s.b - s.a) * pxPct < 34) { s.narrow = s.out = true; s.lane = lanes.length; lanes.push(0); s.flip = s.b + lw > 99; s.lo = s.flip ? s.a - lw : s.b; s.hi = s.flip ? s.a : s.b + lw; }
+      });
+      /* milestones, with labels staggered so they don't collide; near the right edge the label sits on the left */
+      const evs = items.filter(x => x.kind === "event" && x.at.slice(0, 4) === String(y)).map(x => ({ x, at: fracOfYear(x.at, y) * 100 }));
+      const elanes = [];
+      evs.sort((p, q) => p.at - q.at).forEach(e => {
+        const w = Math.min(40, (20 + (e.x.title.length + (e.x.estimate ? 2 : 0)) * 6.4) / pxPct);
+        e.flip = e.at + w > 99;
+        const lo = e.flip ? e.at - w : e.at - .6, hi = e.flip ? e.at + .8 : e.at + w;
+        let l = elanes.findIndex(end => end <= lo); if (l < 0) { l = elanes.length; elanes.push(0); } elanes[l] = hi; e.lane = l;
+      });
+      const ph = Math.max(1, lanes.length) * 38, eh = elanes.length * 20;
+      const blocks = segs.map(s => {
+        const st = stateOf(s.x), w = s.b - s.a;
+        const cls = `${st}${s.x.estimate ? " est" : ""}${UI.pathSel === s.x.id ? " sel" : ""}`;
+        const tip = esc(s.x.title + " · " + fmtSpan(s.x) + (s.x.estimate ? " (estimate)" : ""));
+        return `<button type="button" class="pl-blk ${cls}${s.cutL ? " cut-l" : ""}${s.cutR ? " cut-r" : ""}${s.narrow ? " narrow" : ""}" style="left:${s.a}%;width:${w}%;top:${s.lane * 38}px" data-act="pathSel" data-id="${s.x.id}" title="${tip}" aria-label="${esc(s.x.title)}">` +
+          (s.narrow ? "" : `<b>${esc(s.x.title)}</b>${w > 14 && (s.x.courses || []).length ? `<em>${s.x.courses.length} courses</em>` : ""}`) + `</button>` +
+          (s.narrow ? `<button type="button" class="pl-blab ${cls}" style="${s.flip ? `right:${100 - s.a + .6}%` : `left:${s.b + .6}%`};top:${s.lane * 38}px" data-act="pathSel" data-id="${s.x.id}" tabindex="-1" title="${tip}">${esc(s.x.title)}</button>` : "");
+      }).join("");
+      const pins = evs.map(e => `<button type="button" class="pl-pin ${stateOf(e.x)}${e.x.goal ? " goal" : ""}${e.flip ? " flip" : ""}${UI.pathSel === e.x.id ? " sel" : ""}" style="left:${e.at}%;top:${ph + 8}px;--l:${e.lane}" data-act="pathSel" data-id="${e.x.id}" title="${esc(e.x.title + " · " + fmtSpan(e.x))}"><i></i><span>${esc(e.x.title)}${e.x.estimate ? " ≈" : ""}</span></button>`).join("");
+      const now = y === ty ? `<span class="pl-now" style="left:${fracOfYear(today, y) * 100}%"><em>Now</em></span>` : "";
+      const grid = monthsAt(y).map(([, x]) => `<i style="left:${x}%"></i>`).join("");
+      h += `<div class="pl-row${y < ty ? " past" : ""}" id="year-${y}"><div class="pl-year"><b>${y}</b><em>${esc(yl(y))}</em></div><div class="pl-track" style="height:${ph + 18 + eh + 8}px"><div class="pl-grid">${grid}</div><span class="pl-axis" style="top:${ph + 12}px"></span>${blocks}${pins}${now}</div></div>`;
+    }
+    return h + `</div>`;
+  }
+
+  /* Chapters: one card per year. */
+  function pathChapters(items) {
+    const [y0, y1] = yearBounds(items), ty = +J.today().slice(0, 4), yl = yearLabelFor(items), n = y1 - y0 + 1;
+    let cards = "";
+    for (let y = y0; y <= y1; y++) {
+      const its = items.filter(x => startOf(x).slice(0, 4) === String(y));
+      const prog = y < ty ? 1 : y > ty ? 0 : fracOfYear(J.today(), y);
+      cards += `<section class="ch-card${y === ty ? " current" : ""}${y < ty ? " past" : ""}" id="chap-${y}">
+        <p class="ch-kick">Chapter ${y - y0 + 1} of ${n}</p>
+        <h2 class="ch-year">${y}</h2><p class="ch-label">${esc(yl(y))}</p>
+        <span class="bar ch-bar"><i style="width:${prog * 100}%"></i></span>
+        <ol class="ch-list">${its.map(x => {
+          const st = stateOf(x);
+          return `<li class="ch-item ${x.kind} ${st}${UI.pathSel === x.id ? " sel" : ""}"><button type="button" class="ch-hit" data-act="pathSel" data-id="${x.id}">
+            <span class="ch-date">${esc(fmtSpan(x))}${x.estimate ? " ≈" : ""}</span><b>${esc(x.title)}</b>${st === "now" && x.kind === "period" ? `<span class="ch-now">${periodProgress(x)}</span>` : ""}${x.sub ? `<em>${esc(x.sub)}</em>` : ""}</button>
+            ${(x.courses || []).length ? `<div class="ch-courses">${x.courses.map(c => `<span title="${esc(c.name || "")}">${esc(c.code)}</span>`).join("")}</div>` : ""}</li>`;
+        }).join("") || `<li class="empty sm">Nothing planned yet.</li>`}</ol>
+      </section>`;
+    }
+    return `<div class="chapters"><div class="ch-nav"><button type="button" class="ibtn" data-act="chapStep" data-step="-1" aria-label="Previous year">${J.icon.left}</button>${Array.from({ length: n }, (_, i) => `<button type="button" class="ch-y${y0 + i === ty ? " cur" : ""}" data-act="pathYear" data-year="${y0 + i}">${y0 + i}</button>`).join("")}<button type="button" class="ibtn" data-act="chapStep" data-step="1" aria-label="Next year">${J.icon.right}</button></div>
+      <div class="ch-track" id="chTrack" data-keep-hscroll>${cards}</div></div>`;
+  }
+
+  /* Details for whatever's selected. */
+  function pathDetail(x) {
+    const st = stateOf(x), today = J.today();
+    let status;
+    if (x.kind === "event") { const n = J.daysUntil(x.at); status = n > 0 ? (n === 1 ? "Tomorrow" : `In ${n} days`) : n === 0 ? "Today" : `${-n} days ago`; }
+    else status = st === "now" ? periodProgress(x) : st === "future" ? `Starts in ${J.daysUntil(x.from)} days · ${Math.ceil((J.diffDays(x.from, x.to) + 1) / 7)} weeks long` : "Finished";
+    const courses = (x.courses || []).map(c => {
+      const pj = projects().find(p => p.name.startsWith(c.code));
+      return `<li><b>${esc(c.code)}</b><span>${esc(c.name || "")}</span>${pj ? `<button type="button" class="link" data-act="openProject" data-id="${pj.id}">Open project</button>` : `<button type="button" class="link" data-act="courseProject" data-code="${esc(c.code)}" data-name="${esc(c.name || "")}">Start a project</button>`}</li>`;
+    }).join("");
+    return `<section class="pd ${st}" id="pathDetail">
+      <div class="pd-main"><p class="pd-kind">${x.kind === "event" ? (x.goal ? "Goal" : "Milestone") : "Period"}${x.estimate ? " · date is an estimate" : ""}</p>
+        <h2>${esc(x.title)}</h2><p class="pd-when">${esc(fmtSpan(x))}</p><p class="pd-status">${esc(status)}</p>${x.sub ? `<p class="pd-sub">${esc(x.sub)}</p>` : ""}</div>
+      ${courses ? `<div class="pd-courses"><p class="lbl">Courses</p><ul>${courses}</ul></div>` : ""}
+      <div class="pd-tools"><button type="button" class="btn sm" data-act="editPath" data-id="${x.id}">${J.icon.edit}Edit</button><button type="button" class="ibtn" data-act="pathSel" data-id="" aria-label="Close details">${J.icon.close}</button></div>
+    </section>`;
   }
 
   /* ---------------- LOG: the exhaust ---------------- */
@@ -1162,20 +1275,52 @@
       onDelete: isNew ? null : () => { S.remove("log", e.id); J.toast(`Removed “${short(e.title, 30)}”`, { label: "Undo", run: () => S.put("log", e) }); }
     });
   }
+  function connStatus() {
+    const row = (name, ok, text) => `<li><b>${name}</b><span class="${ok ? "ok" : ""}">${esc(text)}</span></li>`;
+    const g = G.describe(), m = J.mail.describe(), sp = J.spotify || {}, ju = J.jules;
+    return `<ul class="conn">` +
+      row("Google Calendar", g.tone === "ok", g.tone === "ok" ? "Connected through Notion" : g.text) +
+      row("Gmail", m.tone === "ok", m.tone === "ok" ? "Connected" : m.text) +
+      row("Spotify", sp.state === "ok" || sp.state === "idle", sp.state === "ok" ? "Connected · playing" : sp.state === "idle" ? "Connected · nothing playing" : sp.state === "unavailable" ? "Works when Jules is opened in claude.ai or installed" : "Add the Spotify connector in claude.ai to show what's playing") +
+      row("Claude", ju && ju.canTalk(), ju && ju.canTalk() ? "Jules can talk" : "Works when Jules is opened in claude.ai or installed") +
+      row("Voice", ju && ju.canSpeak(), ju && ju.canSpeak() ? "Available" : "Not available here (Safari and phones can't speak)") + `</ul>`;
+  }
+  const pw = st => ({ granted: "on", prompt: "not set up", denied: "off", unavailable: "unavailable" })[st] || "off";
+  function desktopBlock() {
+    const D = J.desktop || {};
+    if (D.mode === "app") return D.needsSetup() ? `<p class="fh">Jules can remind you before things start, sit in your menu bar, and come up with Cmd/Ctrl+Shift+J.</p><button type="button" class="btn sm primary" id="dkPerms">Allow reminders, shortcut and menu bar</button>`
+      : `<p class="fh">Installed. Reminders ${pw(D.perms.notifications)} · shortcut ${pw(D.perms.shortcuts)} · menu bar ${pw(D.perms["menu-bar"])}.</p><button type="button" class="btn sm" id="dkManage">Manage permissions</button>`;
+    if (D.install === "available") return `<p class="fh">Give Jules its own window and icon on this computer.</p><button type="button" class="btn sm primary" id="dkInstall">Install Jules as an app</button>`;
+    if (D.install === "installed") return `<p class="fh">Jules is installed on this computer. Open it from your Applications folder or Start menu.</p>`;
+    return `<p class="fh">In the Claude desktop app for Mac or Windows, open Jules and choose “Install as app” from its menu.</p>`;
+  }
   function openSettings() {
-    const m = S.meta();
+    const m = S.meta(), vp = J.jules ? J.jules.prefs() : {};
     J.form.open({
-      eyebrow: "Settings", title: "Jules", value: m,
+      eyebrow: "Settings", title: "Jules", value: Object.assign({}, m, { voiceOn: vp.on, voiceName: vp.name, voiceRate: String(vp.rate || 1), briefings: vp.briefings, nudges: vp.nudges, nudgeVoice: vp.nudgeVoice }),
       note: S.mode === "db" ? "Everything syncs through this artifact's private storage in claude.ai." : "Everything is saved in this browser only. Open Jules in claude.ai to sync across devices.",
       fields: [
         { key: "name", label: "Your name", placeholder: "For the greeting" },
         { key: "fuelGoal", label: "Weekly goal (hours of tasks done)", type: "number", attrs: 'min="1" max="80" step="1"' },
         { key: "countdowns", label: "Countdowns", type: "lines", rows: 4, placeholder: "2027-02-15 Term 1", hint: "One per line: the date (YYYY-MM-DD), a space, then the label. Past ones hide themselves.",
           toLine: c => `${c.date} ${c.label}`, fromLine: l => { const [date, ...r] = l.split(/\s+/); return { date, label: r.join(" ") || "Countdown" }; } },
+        { key: "voiceOn", label: "Jules speaks out loud", type: "check" },
+        { key: "voiceName", label: "Voice", type: "select", options: (J.jules ? J.jules.VOICES : [["buttery", "Buttery"]]) },
+        { key: "voiceRate", label: "Speaking speed", type: "select", options: [["0.9", "Unhurried"], ["1", "Normal"], ["1.1", "Brisk"], ["1.2", "Quick"]] },
+        { key: "voiceTest", label: "", type: "html", html: `<button type="button" class="btn sm" id="vTest">Hear this voice</button>` },
+        { key: "briefings", label: "Prepare a morning briefing", type: "check" },
+        { key: "nudges", label: "Heads-ups ten minutes before tasks and events", type: "check" },
+        { key: "nudgeVoice", label: "Say heads-ups out loud", type: "check" },
+        { key: "desk", label: "Desktop app", type: "html", html: desktopBlock() },
+        { key: "conn", label: "Connections", type: "html", html: connStatus() },
         { key: "backup", label: "Backup", type: "html", html: `<div class="row"><button type="button" class="btn sm" id="bkCopy">${J.icon.copy}Copy everything as text</button><button type="button" class="btn sm" id="bkRestore">Restore from a copy…</button></div><p class="fh">Paste the copy somewhere safe (a note, an email to yourself) now and then.</p>` }
       ],
       validate(v) { const bad = (v.countdowns || []).find(c => !J.isValidYmd(c.date)); return bad ? `“${bad.date}” isn't a date. Use YYYY-MM-DD.` : ""; },
-      onSave(v) { S.put("meta", { id: "app", name: (v.name || "").trim(), fuelGoal: Math.max(1, +v.fuelGoal || 10), countdowns: v.countdowns }); J.toast("Settings saved"); },
+      onSave(v) {
+        S.put("meta", Object.assign({}, S.meta(), { id: "app", name: (v.name || "").trim(), fuelGoal: Math.max(1, +v.fuelGoal || 10), countdowns: v.countdowns,
+          voice: Object.assign(J.jules ? J.jules.prefs() : {}, { on: !!v.voiceOn, name: v.voiceName, rate: +v.voiceRate || 1, briefings: !!v.briefings, nudges: !!v.nudges, nudgeVoice: !!v.nudgeVoice }) }));
+        J.toast("Settings saved");
+      },
       onOpen(box) {
         $("#bkCopy", box).addEventListener("click", async () => {
           const data = { app: "Jules", version: 5, at: new Date().toISOString() };
@@ -1184,6 +1329,11 @@
           J.toast(ok ? "Copied. Paste it somewhere safe." : "Your browser blocked copying here.");
         });
         $("#bkRestore", box).addEventListener("click", () => setTimeout(restoreForm, 280));
+        const vt = $("#vTest", box);
+        if (vt) vt.addEventListener("click", () => { if (!J.jules || !J.jules.canSpeak()) { J.toast("Voice isn't available here."); return; } const was = J.jules.prefs(); const tmp = { on: true, name: $("#ff-voiceName", box).value, rate: +$("#ff-voiceRate", box).value }; J.jules.stop(); window.claude.use("tts").then(t => t && t.speak("Good evening, sir. Everything is in hand, more or less.", { voice: tmp.name, rate: tmp.rate })).catch(() => {}); });
+        const dp = $("#dkPerms", box); if (dp) dp.addEventListener("click", () => J.desktop.askPermissions().then(() => { J.form.close(); setTimeout(openSettings, 300); }));
+        const dm = $("#dkManage", box); if (dm) dm.addEventListener("click", () => J.desktop.managePermissions());
+        const di = $("#dkInstall", box); if (di) di.addEventListener("click", () => J.desktop.requestInstall());
       }
     });
   }
@@ -1197,7 +1347,7 @@
     });
   }
   function showKeys() {
-    const rows = [["1 – 7", "Home, Tasks, Calendar, Mail, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["Esc", "Close whatever's open"]];
+    const rows = [["1 – 7", "Home, Tasks, Calendar, Mail, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["⌘J or Ctrl+J", "Ask Jules"], ["Cmd/Ctrl+Shift+J", "Bring Jules up from anywhere (installed app)"], ["Esc", "Close whatever's open"]];
     J.form.open({ eyebrow: "Help", title: "Keyboard", value: {}, fields: [{ key: "k", type: "html", label: "", html: `<dl class="keys-dl">${rows.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join("")}</dl><p class="fh">Quick add understands: today, tomorrow, mon–sun, next week, 23 nov, 9am, 14:00, 9-11am, 1h, 90m, #project, !, !!, !!!, daily, weekdays, every fri.</p>` }] });
   }
 
@@ -1212,6 +1362,8 @@
       const cmds = [
         ...ORDER.map(v => ({ label: "Go to " + VIEWS_META[v].label, hint: VIEWS_META[v].key, run: () => go(v) })),
         { label: "Launch the film", hint: "F", run: () => J.warp(() => go("film")) },
+        { label: "Ask Jules", hint: "⌘J", run: () => J.jules && J.jules.toggle(true) },
+        { label: "Hear today's briefing", run: () => J.jules && J.jules.playBrief(new Date(J._now || Date.now()).getHours() >= 17 ? "evening" : "morning") },
         { label: "New project", run: () => { const p = A.newProject("New project"); go("projects"); openProject(p.id, true); } },
         { label: "Add a milestone to the flight path", run: () => { go("path"); editPath(null, "event"); } },
         { label: "Log an achievement", run: () => { go("log"); editLog(null); } },
@@ -1223,7 +1375,7 @@
         const hits = [];
         allTasks().forEach(t => { const s = J.fuzzy(q, t.title); if (s) hits.push({ group: "Tasks", score: s + (isDone(t) ? -30 : 0), label: t.title, hint: [isDone(t) ? "Done" : dueLabel(t), (project(t.project) || {}).name].filter(Boolean).join(" · "), run: () => { go(UI.view === "film" ? "tasks" : UI.view); TD.open(t.id); } }); });
         projects().forEach(p => { const s = J.fuzzy(q, p.name); if (s) hits.push({ group: "Projects", score: s + 10, label: p.name, hint: progressOf(p.id).pct + "%", run: () => { go("projects"); openProject(p.id); } }); });
-        S.list("path").forEach(x => { const s = J.fuzzy(q, x.title + " " + (x.courses || []).map(c => c.code + " " + c.name).join(" ")); if (s) hits.push({ group: "Flight path", score: s, label: x.title, hint: fmtSpan(Object.assign({}, x)), run: () => { go("path"); setTimeout(() => scrollToPath(x.id), 60); } }); });
+        S.list("path").forEach(x => { const s = J.fuzzy(q, x.title + " " + (x.courses || []).map(c => c.code + " " + c.name).join(" ")); if (s) hits.push({ group: "Flight path", score: s, label: x.title, hint: fmtSpan(Object.assign({}, x)), run: () => { UI.pathSel = x.id; go("path"); setTimeout(() => scrollToPath(x.id), 700); } }); });
         S.list("log").forEach(e => { const s = J.fuzzy(q, e.title + " " + e.detail); if (s) hits.push({ group: "Flight log", score: s, label: e.title, hint: e.when, run: () => go("log") }); });
         hits.sort((a, b) => b.score - a.score);
         out.push(...hits.slice(0, 12));
@@ -1279,7 +1431,7 @@
     if (focusName) setTimeout(() => { const n = $("#pp-name"); if (n) { n.focus(); n.select(); } }, 60);
   }
   function scrollToPath(pid) {
-    const el = document.getElementById("path-" + pid);
+    const el = $("#pathDetail");
     if (!el) return;
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
@@ -1294,6 +1446,9 @@
       switch (act) {
         case "toggle": e.stopPropagation(); A.toggle(id); return;
         case "homeScroll": e.preventDefault(); homeScrollTo(a.dataset.to); return;
+        case "brief": J.jules && J.jules.playBrief(a.dataset.kind); return;
+        case "installApp": J.desktop && J.desktop.requestInstall(); return;
+        case "desktopSetup": J.desktop && J.desktop.askPermissions(); return;
         case "mailTask": mailToTask(id); return;
         case "mailFlip": { const v = J.mail.verdict(id); J.mail.setVerdict(id, !(v && v.reply)); return; }
         case "mailSort": J.mail.sort(); return;
@@ -1324,9 +1479,10 @@
           J.toast(`Deleted “${short(p.name, 30)}”`, { label: "Undo", run: () => { S.put("projects", p); ts.forEach(t => A.update(t.id, { project: p.id })); } });
           return;
         }
-        case "pathTo": e.preventDefault(); if (UI.view !== "path") { go("path"); setTimeout(() => scrollToPath(id), 80); } else scrollToPath(id); return;
-        case "pathYear": { const el = document.getElementById("year-" + a.dataset.year); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
-        case "course": UI.openCourse = UI.openCourse === a.dataset.key ? null : a.dataset.key; render(); return;
+        case "pathTo": e.preventDefault(); UI.pathSel = id; if (UI.view !== "path") { go("path"); setTimeout(() => scrollToPath(id), 700); } else { render(); scrollToPath(id); } return;
+        case "pathSel": UI.pathSel = UI.pathSel === id ? null : (id || null); render(); if (UI.pathSel) setTimeout(() => { const d = $("#pathDetail"); if (d && d.getBoundingClientRect().top > innerHeight - 120) d.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, 30); return;
+        case "pathYear": { const el = document.getElementById("year-" + a.dataset.year) || document.getElementById("chap-" + a.dataset.year); if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" }); return; }
+        case "chapStep": { const tr = $("#chTrack"); if (tr) tr.scrollBy({ left: +a.dataset.step * (tr.firstElementChild ? tr.firstElementChild.getBoundingClientRect().width + 20 : 400), behavior: "smooth" }); return; }
         case "courseProject": { const p = A.newProject(`${a.dataset.code}${a.dataset.name ? " · " + a.dataset.name : ""}`); S.patch("projects", p.id, { notes: `Course notes for ${a.dataset.code}.\n\n## Week 1\n- ` }); J.toast(`Project “${short(p.name, 30)}” created`); render(); return; }
         case "addPath": editPath(null, a.dataset.kind); return;
         case "editPath": editPath(S.get("path", id)); return;
@@ -1369,6 +1525,7 @@
   document.addEventListener("keydown", e => {
     const typing = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#palette").hidden ? PAL.open() : PAL.close(); return; }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") { e.preventDefault(); J.jules && J.jules.toggle(); return; }
     if (e.key === "Escape") {
       if (J.overlay.closeTop()) { e.preventDefault(); return; }
       if (typing) { e.target.blur(); return; }
@@ -1407,6 +1564,7 @@
   function capture() {
     const st = { scroll: {}, inputs: [] };
     $$("#view [data-keep-scroll]").forEach(el => { st.scroll[el.dataset.keepScroll] = el.scrollTop; });
+    $$("#view [data-keep-hscroll]").forEach(el => { st.hscroll = st.hscroll || {}; st.hscroll[el.id] = el.scrollLeft; });
     const a = document.activeElement;
     $$("#view [data-keep]").forEach(el => {
       if (el.value || el === a) st.inputs.push({ id: el.id, value: el.value, focus: el === a, s: el.selectionStart, e: el.selectionEnd, editing: el.classList.contains("notes-ta") && !el.hidden });
@@ -1415,6 +1573,10 @@
   }
   function restore(st) {
     Object.entries(st.scroll).forEach(([k, v]) => { const el = $(`#view [data-keep-scroll="${k}"]`); if (el) el.scrollTop = v; });
+    $$("#view [data-keep-hscroll]").forEach(el => {
+      if (st.hscroll && st.hscroll[el.id] != null) el.scrollLeft = st.hscroll[el.id];
+      else { const cur = $(".ch-card.current", el); if (cur) el.scrollLeft = Math.max(0, cur.offsetLeft - el.offsetLeft - 8); }
+    });
     st.inputs.forEach(x => {
       const el = x.id && document.getElementById(x.id);
       if (!el) return;
@@ -1569,7 +1731,39 @@
     $("#sideSettings").innerHTML = `${J.icon.gear}<span>Settings</span>`;
     $("#sideSettings").addEventListener("click", openSettings);
     $("#sideKeys").addEventListener("click", showKeys);
+    $("#julesBtn").innerHTML = `<span class="jb-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>Jules</span><kbd>⌘J</kbd>`;
+    $("#julesBtn").addEventListener("click", () => J.jules && J.jules.toggle());
+    $("#sideInstall").addEventListener("click", () => { const D = J.desktop; if (!D) return; if (D.mode === "app") D.askPermissions(); else D.requestInstall(); });
   }
+  /* What's playing (top right) and the desktop install prompt (sidebar). */
+  function drawNowPlaying() {
+    const el = $("#nowPlaying"), sp = J.spotify, t = sp && sp.track;
+    if (!el) return;
+    el.hidden = !(t && sp.state === "ok");
+    if (el.hidden) return;
+    el.href = t.url || "https://open.spotify.com/";
+    el.title = `${t.playing ? "Playing" : "Paused"}: ${t.name}${t.artist ? " · " + t.artist : ""}`;
+    el.innerHTML = `<span class="eq${t.playing ? " on" : ""}" aria-hidden="true"><i></i><i></i><i></i></span><span class="np-t"><b>${esc(t.name)}</b>${t.artist ? `<em>${esc(t.artist)}</em>` : ""}</span><span class="np-bar" aria-hidden="true"><i style="width:${(sp.position() * 100).toFixed(1)}%"></i></span>`;
+  }
+  setInterval(() => { const b = $("#nowPlaying .np-bar i"); if (b && J.spotify) b.style.width = (J.spotify.position() * 100).toFixed(1) + "%"; }, 1000);
+  function drawSideInstall() {
+    const b = $("#sideInstall"), D = J.desktop;
+    if (!b || !D) return;
+    const setup = D.mode === "app" && D.needsSetup(), inst = D.mode === "web" && D.install === "available";
+    b.hidden = !(setup || inst);
+    b.textContent = setup ? "Finish desktop setup" : "Install as app";
+  }
+  /* The briefing, shown in the launch scene like a subtitle. */
+  function briefLine() {
+    const JU = J.jules;
+    if (!JU || !JU.canTalk()) return "";
+    const hr = new Date(J._now || Date.now()).getHours(), b = JU.briefFor();
+    if (JU.briefBusy) return `<p class="brief rv" style="--d:2"><span class="brief-dim">Jules is preparing the ${JU.briefBusy === "morning" ? "briefing" : "wrap-up"}…</span></p>`;
+    if (hr >= 17) return `<p class="brief rv" style="--d:2"><button type="button" class="brief-play" data-act="brief" data-kind="evening">${PLAY}<span>${b.evening ? "Hear the evening wrap-up again" : "Evening wrap-up"}</span></button></p>`;
+    if (b.morning) return `<p class="brief rv" style="--d:2"><button type="button" class="brief-play" data-act="brief" data-kind="morning">${PLAY}<span>Hear the briefing</span></button><span class="brief-text">“${esc(short(b.morning.text, 150))}”</span></p>`;
+    return `<p class="brief rv" style="--d:2"><button type="button" class="brief-play" data-act="brief" data-kind="morning">${PLAY}<span>Morning briefing</span></button></p>`;
+  }
+  const PLAY = `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" stroke="none"/></svg>`;
 
   /* A missing header photo (e.g. on GitHub, where photos aren't included) just disappears. */
   document.addEventListener("error", e => { if (e.target && e.target.classList && e.target.classList.contains("hero-img")) e.target.remove(); }, true);
@@ -1579,9 +1773,11 @@
   S.on(() => { if (!routed) return; if (UI.view !== "film") render(); else syncStatus(); });
   G.on(() => { if (routed && (UI.view === "home" || UI.view === "calendar")) render(); });
   J.mail.on(() => { if (routed && (UI.view === "home" || UI.view === "mail")) render(); });
+  if (J.spotify) { J.spotify.on(drawNowPlaying); drawNowPlaying(); }
+  if (J.desktop) { J.desktop.on(drawSideInstall); drawSideInstall(); if (J.desktop.ready) J.desktop.ready.then(drawSideInstall); }
   addEventListener("hashchange", route);
   let lastDay = J.today(), resizeT;
-  addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (UI.view === "calendar") render(); }, 200); });
+  addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (UI.view === "calendar" || UI.view === "path") render(); }, 200); });
   setInterval(() => {
     if (J.today() !== lastDay) { lastDay = J.today(); UI.homeDay = lastDay; render(); return; }
     const c = $("#clock"); if (c) c.textContent = J.fmtTime(J.nowMin());

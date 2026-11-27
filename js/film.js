@@ -507,4 +507,6 @@ void main(){
   }
 
   J.film = { enter, leave, refresh };
+  /* Home's launch scene borrows the same depth renderer for its photo. */
+  J.depthRenderer = makeRenderer;
 })();
