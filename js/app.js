@@ -35,13 +35,15 @@
   const VIEWS_META = {
     home:     { label: "Home",        part: "engines", key: "1" },
     tasks:    { label: "Tasks",       part: "engines", key: "2" },
-    calendar: { label: "Calendar",    part: "engines", key: "3" },
+    calendar: { label: "Calendar",    part: "engines", key: "3", short: "Cal" },
     mail:     { label: "Mail",        part: "engines", key: "4" },
     projects: { label: "Projects",    part: "body",    key: "5" },
-    path:     { label: "Flight path", part: "command", key: "6" },
-    log:      { label: "Flight log",  part: "exhaust", key: "7" }
+    path:     { label: "Flight path", part: "command", key: "6", short: "Path" },
+    log:      { label: "Flight log",  part: "exhaust", key: "7", short: "Log" }
   };
   const ORDER = ["home", "tasks", "calendar", "mail", "projects", "path", "log"];
+  /* Books added by other files (trip.js, journal.js, studio.js, notes.js) register here before start-up. */
+  const EXT = {}, EXT_ACTS = {};
   const COLORS = ["flame", "plume", "steel", "sage", "sand", "rose"];
   const STATUS = { burning: "Burning · active", fuelling: "Fuelling · getting ready", coasting: "Coasting · paused", landed: "Landed · done" };
   const STATUS_SHORT = { burning: "Burning", fuelling: "Fuelling", coasting: "Coasting", landed: "Landed" };
@@ -469,6 +471,7 @@
       <div class="cs-shade heavy"></div>
       <div class="cs-wrap">
         <header class="cs-head rv"><h2>Today</h2><p>${todays.length + doneToday.length ? `${doneToday.length} of ${todays.length + doneToday.length} done` : ""}${mailLine()}</p></header>
+        ${J.journal && J.journal.strip() ? `<div class="rv home-habits">${J.journal.strip()}</div>` : ""}
         <div class="home-main">
           <div class="sec today rv" style="--d:1">
             ${quickAdd("home", { due: "today", placeholder: "Add to today, e.g. “Vectors 9am 1h #prep”" })}
@@ -1347,7 +1350,8 @@
     });
   }
   function showKeys() {
-    const rows = [["1 – 7", "Home, Tasks, Calendar, Mail, Projects, Flight path, Log"], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["⌘J or Ctrl+J", "Ask Jules"], ["Cmd/Ctrl+Shift+J", "Bring Jules up from anywhere (installed app)"], ["Esc", "Close whatever's open"]];
+    const shelf = navOrder();
+    const rows = [[`1 – ${Math.min(9, shelf.length)}`, "The books on the shelf, top to bottom: " + shelf.slice(0, 9).map(v => VIEWS_META[v].label).join(", ")], ["N", "New task"], ["⌘K or /", "Search and commands"], ["F", "Launch the film"], ["J / K", "Move through tasks"], ["X", "Tick the selected task"], ["Enter", "Open the selected task"], ["Delete", "Delete the selected task (undo in the toast)"], ["⌘J or Ctrl+J", "Ask Jules"], ["Cmd/Ctrl+Shift+J", "Bring Jules up from anywhere (installed app)"], ["Esc", "Close whatever's open"]];
     J.form.open({ eyebrow: "Help", title: "Keyboard", value: {}, fields: [{ key: "k", type: "html", label: "", html: `<dl class="keys-dl">${rows.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join("")}</dl><p class="fh">Quick add understands: today, tomorrow, mon–sun, next week, 23 nov, 9am, 14:00, 9-11am, 1h, 90m, #project, !, !!, !!!, daily, weekdays, every fri.</p>` }] });
   }
 
@@ -1360,7 +1364,10 @@
       const r = q.trim() ? J.parseQuick(q, { projects: projects() }) : null;
       out.push({ group: "Do", label: q.trim() ? `New task: ${r.title || q}` : "New task", hint: r && r.tokens.length ? r.tokens.map(t => t.label).join(" · ") : "N", run: () => { if (q.trim()) { const t = A.fromText(q); if (t) J.toast(`Added “${short(t.title, 30)}”`); } else focusQuickAdd(); } });
       const cmds = [
-        ...ORDER.map(v => ({ label: "Go to " + VIEWS_META[v].label, hint: VIEWS_META[v].key, run: () => go(v) })),
+        ...navOrder().map(v => ({ label: "Go to " + VIEWS_META[v].label, hint: VIEWS_META[v].key, run: () => go(v) })),
+        { label: "New idea", hint: "Studio", run: () => { J.studio && (J.studio.tab = "ideas", J.studio.board = null); lsSet("studioTab", "ideas"); go("studio"); setTimeout(() => { const i = $("#ideaIn"); if (i) i.focus(); }, 300); } },
+        { label: "Review flashcards", hint: "Notes", run: () => { go("notes"); setTimeout(() => { const b = $('[data-act=ntReview]'); if (b) b.click(); }, 300); } },
+        { label: "Write today's journal page", hint: "Journal", run: () => { go("journal"); setTimeout(() => { const t = $(".jn-text"); if (t) t.focus(); }, 300); } },
         { label: "Launch the film", hint: "F", run: () => J.warp(() => go("film")) },
         { label: "Ask Jules", hint: "⌘J", run: () => J.jules && J.jules.toggle(true) },
         { label: "Hear today's briefing", run: () => J.jules && J.jules.playBrief(new Date(J._now || Date.now()).getHours() >= 17 ? "evening" : "morning") },
@@ -1443,6 +1450,7 @@
     const a = e.target.closest("[data-act]");
     if (a) {
       const act = a.dataset.act, id = a.dataset.id;
+      if (EXT_ACTS[act]) { EXT_ACTS[act](a, e); return; }
       switch (act) {
         case "toggle": e.stopPropagation(); A.toggle(id); return;
         case "homeScroll": e.preventDefault(); homeScrollTo(a.dataset.to); return;
@@ -1536,8 +1544,9 @@
     if (typing || e.metaKey || e.ctrlKey || e.altKey || J.overlay.any()) return;
     if (UI.view === "film") return;
     const k = e.key;
-    const vi = ["1", "2", "3", "4", "5", "6", "7"].indexOf(k);
-    if (vi >= 0) { go(ORDER[vi]); return; }
+    const vi = /^[1-9]$/.test(k) ? +k - 1 : -1;
+    const shown = navOrder();
+    if (vi >= 0 && shown[vi]) { go(shown[vi]); return; }
     if (k === "n" || k === "N") { e.preventDefault(); focusQuickAdd(); return; }
     if (k === "/") { e.preventDefault(); PAL.open(); return; }
     if (k === "?") { showKeys(); return; }
@@ -1611,12 +1620,14 @@
     restore(st);
     scrollTimelines();
     homeAfter();
+    const ext = EXT[UI.view]; if (ext && ext.after) { try { ext.after(entering); } catch (err) { console.error(err); } }
     if (entering) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
     lastRendered = UI.view;
     $$(".nav a[data-view]").forEach(a => { a.classList.toggle("on", a.dataset.view === UI.view); a.setAttribute("aria-current", a.dataset.view === UI.view ? "page" : "false"); });
     if (UI.view !== "home") lightRocket((VIEWS_META[UI.view] || {}).part);
     document.title = `${(VIEWS_META[UI.view] || {}).label || "Jules"} · Jules`;
     syncStatus();
+    if (J.jules && J.jules.afterRender) J.jules.afterRender();
   }
   J.render = render;
 
@@ -1663,9 +1674,32 @@
     };
     const animate = booted && was !== v && was !== "film";
     booted = true;
-    if (animate) J.cut(VIEWS_META[v].label, show); else show();
+    if (animate) J.turn(v, show); else show();
   }
 
+  /* The page turn: the page you're on lifts from its right edge and turns over, onto the book you
+     picked. The old page is a copy laid over the new one, so the new one is already there underneath. */
+  let turnBusy = false;
+  J.turn = (to, fn) => {
+    const view = $("#view"), main = $(".main");
+    if (turnBusy || !view || !main || innerWidth <= 820 || matchMedia("(prefers-reduced-motion: reduce)").matches) { fn(); return; }
+    turnBusy = true;
+    const r = main.getBoundingClientRect(), vr = view.getBoundingClientRect();
+    const layer = document.createElement("div"); layer.className = "turn"; layer.setAttribute("aria-hidden", "true");
+    layer.style.left = Math.max(0, r.left) + "px"; layer.style.width = r.width + "px";
+    layer.style.setProperty("--c", J.bookColor(to));
+    const clone = view.cloneNode(true);
+    clone.removeAttribute("id"); clone.classList.add("view-copy");
+    clone.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
+    clone.querySelectorAll("canvas").forEach(c => c.remove());
+    clone.style.cssText = `position:absolute;left:${vr.left - r.left}px;top:${vr.top}px;width:${vr.width}px;margin:0`;
+    layer.innerHTML = `<div class="turn-under"></div><div class="turn-leaf"><div class="turn-front"></div><div class="turn-back"><span>${esc(VIEWS_META[to].label)}</span></div></div>`;
+    $(".turn-front", layer).appendChild(clone);
+    document.body.appendChild(layer);
+    fn();
+    requestAnimationFrame(() => requestAnimationFrame(() => layer.classList.add("go")));
+    setTimeout(() => { layer.remove(); turnBusy = false; }, 900);
+  };
   /* The cut: a quick letterbox shutter between views, with the view's name in the gap. */
   let cutBusy = false;
   J.cut = (label, fn) => {
@@ -1723,9 +1757,7 @@
       g.addEventListener("mouseenter", () => { lab.textContent = J.PART_LABEL[part]; lab.classList.add("hov"); });
       g.addEventListener("mouseleave", () => { lab.classList.remove("hov"); const on = $(".side-rocket .rp.on"); lab.textContent = on ? J.PART_LABEL[on.dataset.part] : ""; });
     });
-    const nav = ORDER.map(v => `<a href="#${v}" data-view="${v}"><span class="ni">${J.icon[v]}</span><span class="nl">${VIEWS_META[v].label}</span><kbd>${VIEWS_META[v].key}</kbd></a>`).join("");
-    $("#sideNav").innerHTML = nav;
-    $("#tabbar").innerHTML = ORDER.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v]}<span>${v === "path" ? "Path" : v === "log" ? "Log" : v === "calendar" ? "Cal" : VIEWS_META[v].label}</span></a>`).join("");
+    drawNav();
     $("#sideSearch").innerHTML = `${J.icon.search}<span>Search or do</span><kbd>⌘K</kbd>`;
     $("#sideSearch").addEventListener("click", () => PAL.open());
     $("#sideSettings").innerHTML = `${J.icon.gear}<span>Settings</span>`;
@@ -1734,6 +1766,20 @@
     $("#julesBtn").innerHTML = `<span class="jb-wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>Jules</span><kbd>⌘J</kbd>`;
     $("#julesBtn").addEventListener("click", () => J.jules && J.jules.toggle());
     $("#sideInstall").addEventListener("click", () => { const D = J.desktop; if (!D) return; if (D.mode === "app") D.askPermissions(); else D.requestInstall(); });
+  }
+  /* The books in the sidebar. A book can hide itself (Trip shows only near the trip). */
+  function navOrder() { return ORDER.filter(v => !(EXT[v] && EXT[v].shown && !EXT[v].shown())); }
+  /* Each book's cloth, and how thick and long it sits on the shelf. */
+  const BOOK = { home: ["#26344d", 46, 100], tasks: ["#5e2a26", 40, 94], calendar: ["#2a4434", 42, 97], mail: ["#5b4a26", 36, 91], trip: ["#7a4a1f", 40, 95],
+    projects: ["#3a3152", 44, 98], path: ["#1f3c45", 42, 93], log: ["#3d3d3f", 38, 96], journal: ["#552a40", 40, 92], studio: ["#2b4b57", 44, 99], notes: ["#5a4527", 42, 95] };
+  const bookOf = v => BOOK[v] || ["#333a44", 40, 94];
+  J.bookColor = v => bookOf(v)[0];
+  function drawNav() {
+    const list = navOrder();
+    list.forEach((v, i) => { VIEWS_META[v].key = i < 9 ? String(i + 1) : ""; });
+    $("#sideNav").innerHTML = `<div class="shelf">${list.map(v => { const [c, h, w] = bookOf(v); return `<a href="#${v}" data-view="${v}" class="book" style="--c:${c};--h:${h}px;--w:${w}%"><span class="bk-cloth"><span class="bk-band" aria-hidden="true"></span><span class="nl">${VIEWS_META[v].label}</span><kbd>${VIEWS_META[v].key}</kbd></span><span class="bk-edge" aria-hidden="true"></span><span class="bk-leaf" aria-hidden="true"></span><span class="bk-ribbon" aria-hidden="true"></span></a>`; }).join("")}<span class="shelf-board" aria-hidden="true"></span></div>`;
+    $("#tabbar").innerHTML = list.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v] || J.icon.home}<span>${VIEWS_META[v].short || VIEWS_META[v].label}</span></a>`).join("");
+    $$(".nav a[data-view]").forEach(a => a.classList.toggle("on", a.dataset.view === UI.view));
   }
   /* What's playing (top right) and the desktop install prompt (sidebar). */
   function drawNowPlaying() {
@@ -1765,26 +1811,42 @@
   }
   const PLAY = `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor" stroke="none"/></svg>`;
 
-  /* A missing header photo (e.g. on GitHub, where photos aren't included) just disappears. */
-  document.addEventListener("error", e => { if (e.target && e.target.classList && e.target.classList.contains("hero-img")) e.target.remove(); }, true);
-  buildShell();
-  $("#view").innerHTML = `<div class="loading">Loading…</div>`;
-  let routed = false;
-  S.on(() => { if (!routed) return; if (UI.view !== "film") render(); else syncStatus(); });
-  G.on(() => { if (routed && (UI.view === "home" || UI.view === "calendar")) render(); });
-  J.mail.on(() => { if (routed && (UI.view === "home" || UI.view === "mail")) render(); });
-  if (J.spotify) { J.spotify.on(drawNowPlaying); drawNowPlaying(); }
-  if (J.desktop) { J.desktop.on(drawSideInstall); drawSideInstall(); if (J.desktop.ready) J.desktop.ready.then(drawSideInstall); }
-  addEventListener("hashchange", route);
-  let lastDay = J.today(), resizeT;
-  addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (UI.view === "calendar" || UI.view === "path") render(); }, 200); });
-  setInterval(() => {
-    if (J.today() !== lastDay) { lastDay = J.today(); UI.homeDay = lastDay; render(); return; }
-    const c = $("#clock"); if (c) c.textContent = J.fmtTime(J.nowMin());
-    $$("#view .now-line").forEach(l => {
-      const col = l.closest(".tl-col"); const h0 = +col.dataset.h0, pph = +col.dataset.pph, nm = J.nowMin();
-      l.style.top = ((nm - h0 * 60) / 60 * pph) + "px"; $("span", l).textContent = J.fmtTime(nm);
-    });
-  }, 30000);
-  S.ready.then(() => { routed = true; route(); });
+  /* ---------------- the hook other files use ---------------- */
+  J.app = {
+    UI, V, VIEWS_META, ORDER, A, TD, render, go, viewHead, tabs, secHead, short, lsGet, lsSet, drawNav, navOrder,
+    /* register("trip", {label, part, after: "home", render(), after(entering), shown(), acts: {name(el, e)}}) */
+    register(name, def) {
+      EXT[name] = def;
+      VIEWS_META[name] = { label: def.label, part: def.part || "engines", key: "", short: def.short };
+      V[name] = def.render;
+      const at = def.place ? ORDER.indexOf(def.place) : -1;
+      if (!ORDER.includes(name)) { if (at >= 0) ORDER.splice(at + 1, 0, name); else ORDER.push(name); }
+      Object.assign(EXT_ACTS, def.acts || {});
+      if (def.icon) J.icon[name] = def.icon;
+    },
+    boot() {
+      /* A missing header photo (e.g. on GitHub, where photos aren't included) just disappears. */
+      document.addEventListener("error", e => { if (e.target && e.target.classList && e.target.classList.contains("hero-img")) e.target.remove(); }, true);
+      buildShell();
+      $("#view").innerHTML = `<div class="loading">Loading…</div>`;
+      let routed = false;
+      S.on(() => { if (!routed) return; if (UI.view !== "film") render(); else syncStatus(); });
+      G.on(() => { if (routed && (UI.view === "home" || UI.view === "calendar")) render(); });
+      J.mail.on(() => { if (routed && (UI.view === "home" || UI.view === "mail")) render(); });
+      if (J.spotify) { J.spotify.on(drawNowPlaying); drawNowPlaying(); }
+      if (J.desktop) { J.desktop.on(drawSideInstall); drawSideInstall(); if (J.desktop.ready) J.desktop.ready.then(drawSideInstall); }
+      addEventListener("hashchange", route);
+      let lastDay = J.today(), resizeT, lastW = innerWidth;
+      addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(() => { const wc = innerWidth !== lastW; lastW = innerWidth; if (UI.view === "calendar" || (UI.view === "path" && wc)) render(); }, 200); });
+      setInterval(() => {
+        if (J.today() !== lastDay) { lastDay = J.today(); UI.homeDay = lastDay; render(); return; }
+        const c = $("#clock"); if (c) c.textContent = J.fmtTime(J.nowMin());
+        $$("#view .now-line").forEach(l => {
+          const col = l.closest(".tl-col"); const h0 = +col.dataset.h0, pph = +col.dataset.pph, nm = J.nowMin();
+          l.style.top = ((nm - h0 * 60) / 60 * pph) + "px"; $("span", l).textContent = J.fmtTime(nm);
+        });
+      }, 30000);
+      S.ready.then(() => { routed = true; route(); });
+    }
+  };
 })();

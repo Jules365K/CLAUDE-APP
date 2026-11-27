@@ -13,7 +13,12 @@
 (function () {
   "use strict";
   const J = window.J, S = J.store;
-  const CFG = J.MAIL_CFG = { server: "Gmail", list: null };
+  /* Gmail's search_threads, newest first. Its list leaves out dates and previews, so those are
+     filled in with get_thread for new threads only, and remembered in this browser. */
+  const CFG = J.MAIL_CFG = { server: "Gmail", list: { tool: "search_threads", input: { query: "in:inbox newer_than:21d", pageSize: 30, view: "THREAD_VIEW_SUMMARY" } }, detail: "get_thread" };
+  const XK = "jules5:mailx";
+  let extra = {}; try { extra = JSON.parse(localStorage.getItem(XK)) || {}; } catch (e) {}
+  const saveExtra = () => { try { const keys = Object.keys(extra); if (keys.length > 300) keys.slice(0, keys.length - 300).forEach(k => delete extra[k]); localStorage.setItem(XK, JSON.stringify(extra)); } catch (e) {} };
 
   const M = J.mail = { state: "starting", code: null, message: "", items: [], storedAt: null, sorting: false, sortErr: null, canSort: false };
   const listeners = new Set();
@@ -58,6 +63,8 @@
     const threadId = String(pick(raw, "threadId", "thread_id") || pick(m, "threadId") || id);
     const fromRaw = pick(m, "from", "sender", "fromAddress") || header(m, "From") || "";
     const from = typeof fromRaw === "object" ? { name: fromRaw.name || fromRaw.email || "", email: fromRaw.email || fromRaw.address || "" } : splitFrom(fromRaw);
+    const names = m.addressDisplayNames || raw.addressDisplayNames;
+    if (Array.isArray(names)) { const hit = names.find(n => n && n.emailAddress === from.email && n.displayName); if (hit) from.name = hit.displayName; }
     const labels = pick(m, "labelIds", "labels") || [];
     const unreadField = pick(m, "unread", "isUnread");
     return {
@@ -67,9 +74,43 @@
       snippet: String(pick(m, "snippet", "preview", "bodyPreview", "summary") || "").replace(/\s+/g, " ").trim(),
       ts: toTs(pick(m, "date", "internalDate", "receivedAt", "timestamp") || header(m, "Date")),
       unread: unreadField != null ? !!unreadField : (Array.isArray(labels) && labels.includes("UNREAD")),
-      url: String(pick(m, "url", "webUrl", "link", "permalink") || `https://mail.google.com/mail/u/0/#all/${threadId}`)
+      url: (u => u.startsWith("https://") ? u : `https://mail.google.com/mail/u/0/#all/${threadId}`)(String(pick(m, "viewUrl", "url", "webUrl", "link", "permalink") || pick(raw, "viewUrl") || "")),
+      count: +(raw.messageCount || 1)
     };
-  }).filter(Boolean).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  }).filter(Boolean).map(withExtra);
+  /* Fill in what the list left out, from what get_thread told us before. */
+  function withExtra(m) {
+    const x = extra[m.threadId];
+    if (!x) return m;
+    if (!m.ts && x.ts) m.ts = x.ts;
+    if (!m.snippet && x.snippet) m.snippet = x.snippet;
+    if (x.name && (!m.fromName || m.fromName === m.fromEmail.replace(/@.*/, ""))) m.fromName = x.name;
+    if (x.unread != null && !(m.unread)) m.unread = x.unread;
+    if (x.url && !/\/#all\//.test(x.url)) m.url = x.url;
+    return m;
+  }
+  let filling = false;
+  async function fillIn() {
+    if (!mcp || !CFG.detail || filling) return;
+    const need = M.items.filter(m => (!m.ts || !m.snippet) && !(extra[m.threadId] && extra[m.threadId].n === m.count)).slice(0, 15);
+    if (!need.length) return;
+    filling = true;
+    for (let i = 0; i < need.length; i += 3) {
+      await Promise.all(need.slice(i, i + 3).map(async m => {
+        try {
+          const res = await mcp.callTool(CFG.server, CFG.detail, { threadId: m.threadId, messageFormat: "MINIMAL" });
+          const t = res && res.payload, msgs = (t && t.messages) || [], last = msgs[msgs.length - 1];
+          if (!last) return;
+          const one = M.normalise({ messages: [Object.assign({}, last, { id: m.id })] })[0] || {};
+          extra[m.threadId] = { n: m.count, ts: one.ts || null, snippet: one.snippet || "", name: one.fromName || "", unread: msgs.some(x => (x.labelIds || []).includes("UNREAD")), url: one.url || "" };
+        } catch (e) { extra[m.threadId] = { n: m.count, failed: true }; }
+      }));
+    }
+    saveExtra();
+    M.items = M.items.map(withExtra);
+    filling = false; emit();
+    M.sort();
+  }
 
   /* ---------- verdicts: Claude's, or yours when you overrule ---------- */
   M.verdict = id => S.get("mail", id);
@@ -123,7 +164,7 @@
         M.storedAt = (ev.result && ev.result.cache && ev.result.cache.storedAt) || Date.now();
         M.state = "ok"; M.code = null; M.message = "";
         emit();
-        if (location.hash === "#mail") M.sort();
+        fillIn().then(() => { if (location.hash === "#mail") M.sort(); });
       } else {
         const err = ev.error || {};
         M.code = err.code || "upstream_error"; M.message = err.message || "";

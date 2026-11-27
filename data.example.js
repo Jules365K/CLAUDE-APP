@@ -54,3 +54,13 @@ window.JULES_SEED = window.JULES_SEED || {
     { group: "Leadership", when: "2 yrs", title: "A role", detail: "What you led", highlight: true }
   ]
 };
+
+/* An example trip. Change it in data.js (or in the app); the Trip book appears 60 days before you leave. */
+window.JULES_SEED.trip = window.JULES_SEED.trip || {
+  title: "Tokyo and Kyoto", from: "2027-04-02", to: "2027-04-12", home: "Home",
+  legs: [
+    { title: "Tokyo", tz: "Asia/Tokyo", from: "2027-04-02", to: "2027-04-07" },
+    { title: "Kyoto", tz: "Asia/Tokyo", from: "2027-04-07", to: "2027-04-12" }
+  ],
+  prep: ["Visit Japan Web set up"]
+};

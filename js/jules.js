@@ -1,7 +1,12 @@
 /* JULES · jules.js
-   Jules the assistant: Claude, built into the app.
-   - You type (or talk, where dictation is available) and Jules answers in a few sentences,
-     spoken aloud in a Claude voice if you like.
+   Jules the assistant: Claude, built into the app, but not a chat window. Jules is around the room:
+   - Subtitles: what Jules says appears at the bottom of the screen like a film's subtitles,
+     spoken aloud too if the voice is on, and fades when it's done.
+   - The line: press ⌘J (or the Jules mark) and one line opens to type or talk into.
+   - Drafts: when you ask for a change, it appears as a draft: on the task itself where it's on
+     screen, and in a small tray. One tap confirms it; nothing changes until you do.
+   - Margin notes: small remarks written beside things on each page (overdue tasks, packing,
+     emails waiting), worked out on this device without asking Claude.
    - Jules can see your tasks, calendar, mail flags, projects and the flight path.
    - Jules never changes anything by itself: it proposes changes, and each one waits for
      your Confirm.
@@ -14,7 +19,7 @@
   "use strict";
   const J = window.J, S = J.store, { $, $$, esc } = J;
 
-  const JU = J.jules = { open: false, busy: false, speaking: false, turns: [], items: [], ready: null, brief: null, briefBusy: false };
+  const JU = J.jules = { open: false, busy: false, speaking: false, turns: [], drafts: [], last: "", ready: null, brief: null, briefBusy: false };
   let sample = null, tts = null, dict = null, listening = false;
   const VOICES = [["buttery", "Buttery (default)"], ["airy", "Airy"], ["glassy", "Glassy"], ["rounded", "Rounded"]];
   JU.VOICES = VOICES;
@@ -55,6 +60,10 @@
       countdowns: (meta.countdowns || []).filter(c => J.daysUntil(c.date) >= 0).map(c => ({ label: c.label, date: c.date, days: J.daysUntil(c.date) })),
       projects: S.list("projects").filter(p => p.status !== "landed").map(p => { const ts = all.filter(x => x.project === p.id); return { id: p.id, name: p.name, status: p.status, done: ts.filter(x => x.status === "done").length, total: ts.length }; }),
       flightPath: path.filter(x => (x.kind === "event" ? x.at : x.to) >= today).slice(0, 4).map(x => ({ title: x.title, from: x.from || x.at, to: x.to || undefined, estimate: x.estimate || undefined })),
+      trip: J.trip ? J.trip.summary() || undefined : undefined,
+      habits: J.journal ? J.journal.summary() || undefined : undefined,
+      ideas: J.studio && J.studio.summary ? J.studio.summary().ideas : undefined,
+      flashcards: J.notes && J.notes.summary ? J.notes.summary() : undefined,
       weekday: J.DAYL[J.dow(today)], hour: nowD.getHours()
     };
   }
@@ -118,24 +127,25 @@
   async function ask(text) {
     text = String(text || "").trim();
     if (!text || JU.busy) return;
-    if (!sample) { push({ who: "jules", text: "I need Claude to answer, and Claude is only available when Jules is opened in claude.ai or as the installed app." }); return; }
-    push({ who: "you", text });
+    if (!sample) { say("I need Claude to answer, and Claude is only here when Jules is opened in claude.ai or as the installed app.", { speak: false }); return; }
     JU.turns.push({ role: "user", content: text });
-    JU.busy = true; draw();
+    JU.busy = true; drawSub(); drawLine();
     const ctx = `${persona()}\n\n${ACTIONS_HELP}\n\nHis data right now (JSON):\n${JSON.stringify(snapshot())}`;
     const turns = [{ role: "user", content: ctx }, { role: "assistant", content: "Understood." }, ...JU.turns.slice(-12)];
     try {
       const res = await sample.json(turns, { modelTier: "quick", cache: false });
-      const say = String((res && res.say) || "").trim() || "Done thinking, though I've nothing useful to add.";
+      const line = String((res && res.say) || "").trim() || "Done thinking, though I've nothing useful to add.";
       const acts = (Array.isArray(res && res.actions) ? res.actions : []).map(a => ({ a, label: describeAction(a), state: "pending" })).filter(x => x.label);
-      JU.turns.push({ role: "assistant", content: JSON.stringify({ say, actions: acts.map(x => x.a) }) });
-      push({ who: "jules", text: say, actions: acts });
-      speak(say);
+      JU.turns.push({ role: "assistant", content: JSON.stringify({ say: line, actions: acts.map(x => x.a) }) });
+      JU.busy = false;
+      addDrafts(acts);
+      say(line);
     } catch (e) {
       JU.turns.pop();
-      push({ who: "jules", text: errText(e), error: true });
+      JU.busy = false;
+      say(errText(e), { speak: false, err: true });
     }
-    JU.busy = false; draw();
+    drawLine();
   }
   JU.ask = ask;
   function errText(e) {
@@ -145,7 +155,6 @@
     if (c === "invalid_json") return "I garbled that answer. Ask me again?";
     return "That didn't go through. Try again in a moment.";
   }
-  function push(item) { item.at = Date.now(); JU.items.push(item); if (JU.items.length > 60) JU.items.shift(); draw(); }
 
   /* ---------- voice ---------- */
   function speak(text) {
@@ -165,7 +174,7 @@
         const i = $("#julesIn"), v = i ? i.value.trim() : "";
         listening = false;
         if (i) i.value = "";
-        if (v) ask(v); else draw();
+        if (v) ask(v); else drawLine();
       }
     });
   }
@@ -174,8 +183,8 @@
     if (listening) { try { await dict.stop(); } catch (e) {} return; }
     const input = $("#julesIn");
     dBase = input.value ? input.value.trim() + " " : ""; dFinals = "";
-    dict.start().catch(e => { listening = false; if (e && e.code === "not_granted") dict = null; draw(); });
-    listening = true; JU.stop(); draw();
+    dict.start().catch(e => { listening = false; if (e && e.code === "not_granted") dict = null; drawLine(); });
+    listening = true; JU.stop(); drawLine();
   }
 
   /* ---------- briefings ---------- */
@@ -183,7 +192,7 @@
   JU.briefFor = () => (S.get("meta", briefKey()) || {});
   async function makeBrief(kind) {
     if (!sample || JU.briefBusy) return null;
-    JU.briefBusy = kind; draw(); if (J.render && J.ui.view === "home") J.render();
+    JU.briefBusy = kind; drawSub(); if (J.render && J.ui.view === "home") J.render();
     const what = kind === "morning"
       ? "Write his morning briefing, to be spoken aloud: 60 to 110 words in natural sentences. Cover the day ahead (first commitments with times, how full it is), anything overdue, emails waiting for a reply if any, and the nearest countdown. End with one dry, encouraging line. No greeting beyond a short 'Good morning'."
       : "Write his evening wrap-up, to be spoken aloud: 50 to 100 words in natural sentences. Say what got done today, what is still open (suggest moving it if sensible), and what tomorrow starts with. End with one dry line. No greeting beyond a short 'Good evening'.";
@@ -191,10 +200,10 @@
       const { text } = await sample(`${persona()}\n\n${what}\nPlain text only.\n\nHis data (JSON):\n${JSON.stringify(snapshot())}`, { modelTier: "default", cache: { gcTime: 6 * 3600 * 1000 } });
       const rec = Object.assign({ id: briefKey() }, JU.briefFor(), { [kind]: { text: text.trim(), at: Date.now() } });
       S.put("meta", rec);
-      JU.briefBusy = false; draw();
+      JU.briefBusy = false; drawSub();
       return text.trim();
     } catch (e) {
-      JU.briefBusy = false; draw();
+      JU.briefBusy = false; drawSub();
       J.toast(kind === "morning" ? "The briefing didn't come through." : "The wrap-up didn't come through.");
       return null;
     }
@@ -202,10 +211,8 @@
   JU.playBrief = async kind => {
     let b = JU.briefFor()[kind];
     if (!b) { const t = await makeBrief(kind); if (!t) return; b = { text: t }; }
-    if (!JU.open) JU.toggle(true);
-    push({ who: "jules", text: b.text, brief: kind });
     JU.turns.push({ role: "assistant", content: JSON.stringify({ say: b.text, actions: [] }) });
-    speak(b.text);
+    say(b.text, { brief: kind });
   };
   JU.canTalk = () => !!sample;
   JU.canSpeak = () => !!tts;
@@ -224,8 +231,8 @@
   function nudge(text, key) {
     nudged.add(key); saveNudged();
     const p = JU.prefs();
-    if (J.desktopNotify && J.desktopNotify(text)) {} else J.toast(text, null, 9000);
-    if (p.nudgeVoice) speak(text);
+    if (J.desktopNotify) J.desktopNotify(text);
+    say(text, { speak: p.nudgeVoice });
   }
   function checkNudges() {
     const p = JU.prefs();
@@ -245,65 +252,188 @@
       if (left.length) {
         nudged.add("evening:" + today); saveNudged();
         const acts = left.slice(0, 6).map(t => { const a = { type: "update_task", id: t.id, due: J.addDays(today, 1) }; return { a, label: describeAction(a), state: "pending" }; });
-        push({ who: "jules", text: `${left.length === 1 ? "One thing is" : left.length + " things are"} still open from today. Shall I move ${left.length === 1 ? "it" : "them"} to tomorrow?`, actions: acts });
-        if (J.desktopNotify && J.desktopNotify(`${left.length} still open from today. Open Jules to move ${left.length === 1 ? "it" : "them"} to tomorrow.`)) {} else J.toast(`${left.length} still open from today`, { label: "Review", run: () => JU.toggle(true) }, 9000);
+        addDrafts(acts);
+        J.desktopNotify && J.desktopNotify(`${left.length} still open from today. Jules has drafted moving ${left.length === 1 ? "it" : "them"} to tomorrow.`);
+        say(`${left.length === 1 ? "One thing is" : left.length + " things are"} still open from today. I've drafted moving ${left.length === 1 ? "it" : "them"} to tomorrow, if you'd like.`, { speak: false });
       }
     }
   }
 
-  /* ---------- the panel ---------- */
-  function draw() {
-    const box = $("#jules");
-    if (!box) return;
-    box.classList.toggle("open", JU.open);
-    box.setAttribute("aria-hidden", JU.open ? "false" : "true");
+  /* ---------- subtitles ---------- */
+  /* What Jules says, shown a sentence or two at a time at the bottom of the screen. Timed to
+     roughly how long it takes to say; hover to hold it. */
+  let subQ = [], subT = 0, subHold = false, subErr = false;
+  function chunks(text) {
+    const sents = String(text).replace(/\s+/g, " ").trim().match(/[^.!?…]+[.!?…]+["”’)]*|[^.!?…]+$/g) || [text];
+    const out = []; let cur = "";
+    sents.forEach(x => { x = x.trim(); if ((cur + " " + x).trim().length > 150 && cur) { out.push(cur); cur = x; } else cur = (cur + " " + x).trim(); });
+    if (cur) out.push(cur);
+    return out;
+  }
+  function say(text, o = {}) {
+    text = String(text || "").trim(); if (!text) return;
+    JU.last = text; subErr = !!o.err;
+    subQ = chunks(text);
+    if (o.speak !== false) speak(text);
+    clearTimeout(subT);
+    nextSub();
+  }
+  JU.say = say;
+  function nextSub() {
+    const box = $("#julesSub"); if (!box) return;
+    const line = subQ.shift();
+    if (line == null) { box.classList.remove("on"); return; }
+    box.innerHTML = `<p class="${subErr ? "err" : ""}">${esc(line)}</p>`;
+    box.classList.remove("on"); void box.offsetWidth; box.classList.add("on");
+    const rate = JU.prefs().rate || 1;
+    const ms = Math.max(2600, line.length * 62 / rate) + (subQ.length ? 0 : 1800);
+    const tick = () => { if (subHold) { subT = setTimeout(tick, 400); return; } nextSub(); };
+    subT = setTimeout(tick, ms);
+  }
+  function drawSub() {
+    const box = $("#julesSub"); if (!box) return;
+    if (JU.busy || JU.briefBusy) {
+      clearTimeout(subT); subQ = [];
+      box.innerHTML = `<p class="thinking"><span class="dots"><i></i><i></i><i></i></span>${JU.briefBusy ? `<span>Preparing the ${JU.briefBusy === "morning" ? "briefing" : "wrap-up"}</span>` : ""}</p>`;
+      box.classList.add("on");
+    } else if (box.querySelector(".thinking")) box.classList.remove("on");
+  }
+
+  /* ---------- drafts: proposed changes, waiting for one tap ---------- */
+  function addDrafts(acts) {
+    acts.forEach(x => { x.key = J.uid("d"); JU.drafts.push(x); });
+    JU.drafts = JU.drafts.filter(x => x.state === "pending").slice(-8);
+    drawTray(); markRows();
+  }
+  function settle(key, yes) {
+    const x = JU.drafts.find(d => d.key === key); if (!x || x.state !== "pending") return;
+    if (yes) { try { applyAction(x.a); x.state = "done"; } catch (e) { x.state = "failed"; } } else x.state = "skipped";
+    JU.drafts = JU.drafts.filter(d => d.state === "pending");
+    drawTray(); markRows();
+    if (yes && x.state === "done") J.toast(x.label.replace(/^“([^”]*)”:/, "$1:"), null, 2600);
+  }
+  JU.settle = settle;
+  function drawTray() {
+    const box = $("#julesTray"); if (!box) return;
+    const ds = JU.drafts.filter(d => d.state === "pending");
+    box.hidden = !ds.length;
+    box.innerHTML = ds.length ? `<p class="jl-tray-h">${ds.length === 1 ? "A draft" : ds.length + " drafts"} from Jules${ds.length > 1 ? `<button type="button" class="link" data-jall>Do all</button>` : ""}</p>` +
+      ds.map(d => `<div class="jl-draft"><span>${esc(d.label)}</span><span class="row"><button type="button" class="ibtn ok" data-jok="${d.key}" aria-label="Do it: ${esc(d.label)}">${J.icon.check}</button><button type="button" class="ibtn" data-jno="${d.key}" aria-label="Skip: ${esc(d.label)}">${J.icon.close}</button></span></div>`).join("") : "";
+  }
+  /* A draft that touches a task on screen is shown on that task too. */
+  function markRows() {
+    $$("#view .trow.drafted").forEach(r => { r.classList.remove("drafted"); const c = $(".jl-mark", r); if (c) c.remove(); });
+    JU.drafts.filter(d => d.state === "pending" && d.a.id).forEach(d => {
+      $$(`#view .trow[data-task="${CSS.escape(d.a.id)}"]`).forEach(r => {
+        r.classList.add("drafted");
+        const m = document.createElement("span"); m.className = "jl-mark";
+        m.innerHTML = `<em>${esc(draftVerb(d.a))}</em><button type="button" class="ibtn ok" data-jok="${d.key}" aria-label="Do it">${J.icon.check}</button><button type="button" class="ibtn" data-jno="${d.key}" aria-label="Skip">${J.icon.close}</button>`;
+        r.appendChild(m);
+      });
+    });
+  }
+  function draftVerb(a) {
+    if (a.type === "complete_task") return "Jules: tick off?";
+    if (a.type === "delete_task") return "Jules: delete?";
+    const l = describeAction(a) || ""; const i = l.indexOf(":");
+    return "Jules: " + (i > 0 ? l.slice(i + 1).trim() : "update") + "?";
+  }
+
+  /* ---------- margin notes ---------- */
+  /* Worked out here, from your data, each time a page is drawn. Each rule returns where to write
+     and what; only the first few that apply are shown, so the margins stay quiet. */
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const NOTES = {
+    home: () => {
+      const out = [], today = J.today(), open = S.list("tasks").filter(t => t.status !== "done");
+      const late = open.filter(t => t.due && t.due < today);
+      if (late.length) out.push(["#h-today .cs-head", `${plural(late.length, "task")} overdue. They won't do themselves, sir.`]);
+      const tdy = open.filter(t => t.due === today);
+      if (!tdy.length && !late.length) out.push(["#h-today .cs-head", "Nothing booked today. Unusual, but not unwelcome."]);
+      const due = J.notes && J.notes.dueCount ? J.notes.dueCount(null) : 0;
+      if (due >= 5) out.push(["#h-today .cs-head", `${due} flashcards due. Ten minutes now saves an hour later.`]);
+      const trip = J.trip && J.trip.summary && J.trip.summary();
+      if (trip && trip.daysToGo != null && trip.daysToGo >= 0 && trip.daysToGo <= 14) out.push(["#h-launch .count-what", `${trip.packed} packed so far.`]);
+      return out;
+    },
+    tasks: () => {
+      const out = [], today = J.today(), open = S.list("tasks").filter(t => t.status !== "done");
+      const late = open.filter(t => t.due && t.due < today).sort((a, b) => a.due.localeCompare(b.due));
+      if (late.length) out.push([".grp.late .grp-h", `The oldest has waited since ${J.fmtDate(late[0].due)}. Do it, move it, or let it go.`]);
+      const inbox = open.filter(t => !t.due);
+      if (inbox.length >= 6) out.push([".grp[data-date=''] .grp-h", `${inbox.length} with no date. A date is a decision.`]);
+      const tom = open.filter(t => t.due === J.addDays(today, 1)).reduce((n, t) => n + (t.dur || 30), 0);
+      if (tom > 8 * 60) out.push([`.grp[data-date='${J.addDays(today, 1)}'] .grp-h`, `Tomorrow holds ${Math.round(tom / 60)} hours. Ambitious.`]);
+      return out;
+    },
+    mail: () => {
+      const M = J.mail; if (!M || M.state !== "ok") return [];
+      const waiting = M.items.filter(m => M.needsReply(m) && m.ts).sort((a, b) => a.ts - b.ts);
+      if (!waiting.length) return [];
+      const d = Math.floor((Date.now() - waiting[0].ts) / 864e5);
+      return d >= 2 ? [[".mgroup:not(.rest):not(.soon) .grp-h", `The oldest has waited ${d} days for you.`]] : [];
+    },
+    trip: () => {
+      const t = J.trip && J.trip.summary && J.trip.summary(); if (!t) return [];
+      const out = [], [done, all] = t.packed.split(" of ").map(Number);
+      if (t.daysToGo != null && t.daysToGo >= 0 && t.daysToGo <= 7 && all && done / all < .5) out.push([".tr-pack header", `${all - done} to pack, ${plural(t.daysToGo, "day")} to go.`]);
+      if (t.beforeYouGoLeft.length && t.daysToGo != null && t.daysToGo <= 10) out.push([".tr-prep header", `Start with: ${t.beforeYouGoLeft[0].toLowerCase()}.`]);
+      if (t.stops.some(s => !s.from)) out.push([".tr-route", "Some stops have no dates yet. Tap one to set them."]);
+      return out;
+    },
+    notes: () => {
+      const N = J.notes; if (!N || N.review || N.open) return [];
+      const due = N.dueCount(null), mine = N.course ? N.dueCount(N.course) : 0;
+      return due ? [[".nt-head", mine && mine !== due ? `${mine} due here, ${due} across everything.` : `${due} due. They get easier the sooner you see them.`]] : [];
+    },
+    journal: () => {
+      const J2 = J.journal, hs = J2 && J2.habits(); if (!hs) return [];
+      const out = [], h = new Date(J._now || Date.now()).getHours();
+      const sleep = hs.find(x => /midnight|sleep|bed/i.test(x.name));
+      if (sleep && h >= 22 && !(J2.summary().today.find(t => t.habit === sleep.name) || {}).done) out.push([".jn-left .hb-strip", h >= 23 ? "It's past eleven, sir. The midnight habit is looking optimistic." : "Two hours to midnight, if that habit still matters."]);
+      const best = J2.summary().today.filter(t => t.streak >= 3).sort((a, b) => b.streak - a.streak)[0];
+      if (best && !best.done) out.push([".jn-left .hb-strip", `${best.habit}: ${best.streak} days running. Today would make it ${best.streak + 1}.`]);
+      return out;
+    },
+    projects: () => {
+      if (J.ui.project) return [];
+      const quiet = S.list("projects").filter(p => p.status === "burning" && !S.list("tasks").some(t => t.project === p.id && t.status !== "done"));
+      return quiet.length ? [[".pgroup .grp-h", `${quiet[0].name} is marked as burning, with nothing left to do in it.`]] : [];
+    }
+  };
+  function writeNotes() {
+    $$("#view .mnote.auto").forEach(n => n.remove());
+    const fn = NOTES[J.ui && J.ui.view];
+    if (!fn) return;
+    let list = []; try { list = fn(); } catch (e) { return; }
+    list.slice(0, 3).forEach(([sel, text]) => {
+      const at = $(`#view ${sel.split(",").join(", #view ")}`); if (!at) return;
+      const n = document.createElement("p"); n.className = "mnote auto"; n.innerHTML = `<span class="mn-by">Jules</span>${esc(text)}`;
+      at.insertAdjacentElement("afterend", n);
+    });
+  }
+  /* Called by the app after every page is drawn. */
+  JU.afterRender = () => { markRows(); writeNotes(); };
+
+  /* ---------- the line: type or talk ---------- */
+  const CHIPS = [["Brief me", () => JU.playBrief(new Date(J._now || Date.now()).getHours() >= 17 ? "evening" : "morning")], ["What's next?", () => ask("What's next for me?")], ["Plan tomorrow", () => ask("Help me plan tomorrow.")], ["Anything I'm forgetting?", () => ask("Is there anything I'm forgetting or letting slip?")]];
+  function drawLine() {
+    const box = $("#julesLine"); if (!box) return;
+    box.hidden = !JU.open;
     const btn = $("#julesBtn"); if (btn) { btn.classList.toggle("on", JU.open); btn.classList.toggle("speaking", JU.speaking); }
     if (!JU.open) return;
-    const p = JU.prefs();
-    const items = JU.items;
-    const prevIn = $("#julesIn"), keep = prevIn ? { v: prevIn.value, f: document.activeElement === prevIn } : null;
-    const chips = [["Brief me on today", () => JU.playBrief(new Date(J._now || Date.now()).getHours() >= 17 ? "evening" : "morning")], ["What's next?", () => ask("What's next for me?")], ["Plan tomorrow", () => ask("Help me plan tomorrow.")], ["Anything I'm forgetting?", () => ask("Is there anything I'm forgetting or letting slip?")]];
-    box.innerHTML = `<div class="ju-head"><div class="ju-title"><b>Jules</b><span class="ju-wave${JU.speaking ? " on" : ""}" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div>
-        <div class="ju-tools">${tts ? `<button type="button" class="ibtn${p.on ? " on" : ""}" id="juVoice" aria-pressed="${p.on}" title="${p.on ? "Voice on" : "Voice off"}" aria-label="Voice">${p.on ? ICON_SPK : ICON_MUTE}</button>` : ""}<button type="button" class="ibtn" id="juClose" aria-label="Close (Esc)">${J.icon.close}</button></div></div>
-      <div class="ju-log" id="juLog" aria-live="polite">${items.length ? items.map(itemHtml).join("") : `<div class="ju-empty"><p>${esc(greeting())}</p><p class="dim">Ask about your day, or tell me what to move. I'll check with you before changing anything.</p></div>`}
-        ${JU.busy ? `<div class="ju-msg bot thinking"><span class="dots"><i></i><i></i><i></i></span></div>` : ""}
-        ${JU.briefBusy ? `<div class="ju-msg bot thinking"><span class="dim">Preparing the ${JU.briefBusy === "morning" ? "briefing" : "wrap-up"}…</span></div>` : ""}</div>
-      ${items.length < 2 ? `<div class="ju-chips">${chips.map(([l], i) => `<button type="button" class="chip-btn" data-chip="${i}">${esc(l)}</button>`).join("")}</div>` : ""}
-      <form class="ju-form" id="juForm" autocomplete="off">${dict ? `<button type="button" class="ibtn ju-mic${listening ? " on" : ""}" id="juMic" aria-pressed="${listening}" aria-label="${listening ? "Stop listening and send" : "Talk"}">${ICON_MIC}</button>` : ""}
-        <input id="julesIn" type="text" placeholder="${listening ? "Listening…" : sample ? "Ask Jules…" : "Jules needs claude.ai to answer"}" ${sample ? "" : "disabled"} maxlength="600">
+    const prev = $("#julesIn"), keep = prev ? { v: prev.value, f: document.activeElement === prev } : null;
+    box.innerHTML = `${!JU.busy ? `<div class="jl-chips">${CHIPS.map(([l], i) => `<button type="button" class="chip-btn" data-chip="${i}">${esc(l)}</button>`).join("")}${JU.last ? `<button type="button" class="chip-btn" data-again>Say that again</button>` : ""}</div>` : ""}
+      <form class="jl-form" id="juForm" autocomplete="off">${dict ? `<button type="button" class="ibtn ju-mic${listening ? " on" : ""}" id="juMic" aria-pressed="${listening}" aria-label="${listening ? "Stop listening and send" : "Talk"}">${ICON_MIC}</button>` : ""}
+        <input id="julesIn" type="text" placeholder="${listening ? "Listening…" : sample ? "Ask Jules, or tell it what to change" : "Jules needs claude.ai to answer"}" ${sample ? "" : "disabled"} maxlength="600" aria-label="Ask Jules">
+        ${tts ? `<button type="button" class="ibtn${JU.prefs().on ? " on" : ""}" id="juVoice" aria-pressed="${JU.prefs().on}" title="${JU.prefs().on ? "Voice on" : "Voice off"}" aria-label="Voice">${JU.prefs().on ? ICON_SPK : ICON_MUTE}</button>` : ""}
         <button type="submit" class="ibtn" aria-label="Send" ${sample ? "" : "disabled"}>${ICON_SEND}</button></form>`;
-    const log = $("#juLog"); log.scrollTop = log.scrollHeight;
-    if (keep) { const ni = $("#julesIn"); ni.value = keep.v; if (keep.f && !ni.disabled) ni.focus(); }
-    $("#juClose").onclick = () => JU.toggle(false);
-    const vb = $("#juVoice"); if (vb) vb.onclick = () => { const on = !JU.prefs().on; JU.setPrefs({ on }); if (!on) JU.stop(); draw(); };
-    const mb = $("#juMic"); if (mb) mb.onclick = mic;
+    const ni = $("#julesIn"); if (keep) { ni.value = keep.v; if (keep.f && !ni.disabled) ni.focus(); }
     $("#juForm").onsubmit = e => { e.preventDefault(); const i = $("#julesIn"); const v = i.value; i.value = ""; ask(v); };
-    $$("[data-chip]", box).forEach(b => b.onclick = () => chips[+b.dataset.chip][1]());
-    $$("[data-act-i]", box).forEach(b => b.onclick = () => {
-      const it = items[+b.dataset.item], x = it && it.actions[+b.dataset.actI];
-      if (!x || x.state !== "pending") return;
-      if (b.dataset.do === "yes") { try { applyAction(x.a); x.state = "done"; } catch (err) { x.state = "failed"; } } else x.state = "skipped";
-      draw();
-    });
-    $$("[data-all]", box).forEach(b => b.onclick = () => {
-      const it = items[+b.dataset.all];
-      it.actions.forEach(x => { if (x.state === "pending") { try { applyAction(x.a); x.state = "done"; } catch (err) { x.state = "failed"; } } });
-      draw();
-    });
-    $$("[data-replay]", box).forEach(b => b.onclick = () => speak(items[+b.dataset.replay].text));
-  }
-  function itemHtml(it, i) {
-    if (it.who === "you") return `<div class="ju-msg you">${esc(it.text)}</div>`;
-    const acts = it.actions || [];
-    const pending = acts.filter(x => x.state === "pending").length;
-    return `<div class="ju-msg bot${it.error ? " err" : ""}"><p>${esc(it.text)}</p>${tts && !it.error ? `<button type="button" class="ju-replay link" data-replay="${i}" aria-label="Say it again">${ICON_SPK} Hear it</button>` : ""}
-      ${acts.length ? `<div class="ju-acts">${acts.map((x, k) => `<div class="ju-act ${x.state}"><span>${esc(x.label)}</span>${x.state === "pending" ? `<span class="row"><button type="button" class="btn sm primary" data-item="${i}" data-act-i="${k}" data-do="yes">Confirm</button><button type="button" class="btn sm" data-item="${i}" data-act-i="${k}" data-do="no">Skip</button></span>` : `<em>${x.state === "done" ? "Done" : x.state === "skipped" ? "Skipped" : "Couldn't do that"}</em>`}</div>`).join("")}
-        ${pending > 1 ? `<button type="button" class="link ju-all" data-all="${i}">Confirm all ${pending}</button>` : ""}</div>` : ""}</div>`;
-  }
-  function greeting() {
-    const h = new Date(J._now || Date.now()).getHours(), n = S.meta().name;
-    const part = h < 5 ? "Burning the midnight oil" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-    return `${part}${n ? ", " + n : ""}. What can I do for you?`;
+    const mb = $("#juMic"); if (mb) mb.onclick = mic;
+    const vb = $("#juVoice"); if (vb) vb.onclick = () => { const on = !JU.prefs().on; JU.setPrefs({ on }); if (!on) JU.stop(); drawLine(); };
+    $$("[data-chip]", box).forEach(b => b.onclick = () => CHIPS[+b.dataset.chip][1]());
+    const ag = $("[data-again]", box); if (ag) ag.onclick = () => say(JU.last);
   }
   const ICON_SPK = `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.4L8.5 3v10L4.9 10H2.5z"/><path d="M11 5.6a3.4 3.4 0 0 1 0 4.8M12.8 3.8a6 6 0 0 1 0 8.4"/></svg>`;
   const ICON_MUTE = `<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.4L8.5 3v10L4.9 10H2.5z"/><path d="m11 6 3.5 4M14.5 6 11 10"/></svg>`;
@@ -313,28 +443,31 @@
 
   JU.toggle = on => {
     JU.open = on == null ? !JU.open : !!on;
-    draw();
-    if (JU.open) { setTimeout(() => { const i = $("#julesIn"); if (i && !i.disabled) i.focus(); }, 80); J.overlay && J.overlay.push("jules", () => JU.toggle(false)); }
+    drawLine();
+    if (JU.open) { setTimeout(() => { const i = $("#julesIn"); if (i && !i.disabled) i.focus(); }, 60); J.overlay && J.overlay.push("jules", () => JU.toggle(false)); }
     else J.overlay && J.overlay.pop("jules");
   };
 
+  /* Clicks on drafts (tray or on a task row) and on the subtitles. */
+  document.addEventListener("click", e => {
+    const ok = e.target.closest("[data-jok]"), no = e.target.closest("[data-jno]"), all = e.target.closest("[data-jall]");
+    if (ok) { e.stopPropagation(); e.preventDefault(); settle(ok.dataset.jok, true); return; }
+    if (no) { e.stopPropagation(); e.preventDefault(); settle(no.dataset.jno, false); return; }
+    if (all) { JU.drafts.filter(d => d.state === "pending").map(d => d.key).forEach(k => settle(k, true)); return; }
+    if (e.target.closest("#julesSub p:not(.thinking)")) { if (!JU.open) JU.toggle(true); }
+  }, true);
+
   JU.ready = (async () => {
-    let framed = true; try { framed = window.top !== window.self; } catch (e) {}
-    const mayHaveHost = framed || /claude/i.test(location.hostname);
-    for (let i = 0; mayHaveHost && i < 20 && !(window.claude && window.claude.use); i++) await new Promise(r => setTimeout(r, 100));
-    const C = window.claude;
-    if (C && typeof C.use === "function") {
-      const t = ms => new Promise(r => setTimeout(() => r(null), ms));
-      [sample, tts, dict] = await Promise.all(["sample", "tts", "dictation"].map(n => Promise.race([C.use(n), t(10000)]).catch(() => null)));
-    }
+    [sample, tts, dict] = await Promise.all(["sample", "tts", "dictation"].map(n => J.cap(n)));
     if (dict) wireDictation();
-    if (tts) tts.onState(({ state }) => { JU.speaking = state === "speaking"; const w = $(".ju-wave"); if (w) w.classList.toggle("on", JU.speaking); const b = $("#julesBtn"); if (b) b.classList.toggle("speaking", JU.speaking); });
+    if (tts) tts.onState(({ state }) => { JU.speaking = state === "speaking"; const b = $("#julesBtn"); if (b) b.classList.toggle("speaking", JU.speaking); const sb = $("#julesSub"); if (sb) sb.classList.toggle("speaking", JU.speaking); });
+    const sb = $("#julesSub"); if (sb) { sb.addEventListener("mouseenter", () => { subHold = true; }); sb.addEventListener("mouseleave", () => { subHold = false; }); }
     await S.ready;
     maybeMorning();
     JU.checkNudges = checkNudges;
     setInterval(checkNudges, 30000);
     setTimeout(checkNudges, 4000);
-    draw();
+    drawLine(); drawTray();
     return true;
   })();
 })();

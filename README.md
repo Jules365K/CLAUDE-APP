@@ -10,11 +10,11 @@ A personal mission control built around one idea: **your life as a rocket.**
 
 Jules comes in three parts:
 
-- **The app** is what you use every day: tasks, a calendar with Google Calendar alongside your tasks, projects with notes, the flight path to your degree, and a flight log that doubles as your CV.
+- **The app** is a shelf of books, one per part of your life. Hover a book on the shelf and it slides out; click it and the page turns into it.
 - **The film** is the cinematic scroll you launch from the sidebar. It is fed by the same live data.
-- **Jules the assistant** (top right, or `⌘J`) talks you through your day, answers questions about it, and proposes changes that you confirm one by one.
+- **Jules the assistant** isn't a chat window. It speaks in subtitles at the bottom of the screen, writes small notes in the margins of each page, and puts the changes it suggests on the thing itself, as drafts you confirm with one tap.
 
-Status: **v0.7**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
+Status: **v0.8**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
 
 ## What it does
 
@@ -27,6 +27,10 @@ Status: **v0.7**. Plain HTML, CSS and JavaScript, with no build step, so you can
 | **Projects** (`5`) | Body | Each project has its tasks, its progress (worked out from those tasks), and notes in simple Markdown with tickable checklists. |
 | **Flight path** (`6`) | Command module | Two ways to read the route. **Planner**: one row per year, terms as blocks on a Jan–Dec grid, milestones as diamonds, and a line for today. **Chapters**: one card per year that you swipe through. Click anything to see its details, its courses, and a button to start a project for each course. Skills ("the star") are at the bottom. |
 | **Flight log** (`7`) | Exhaust | Recent burns (tasks you finished), plus achievements grouped for your CV. **Copy as CV text** turns the whole log into plain text. |
+| **Trip** (`8`) | Engines | Only on the shelf from 60 days before a trip. A countdown, the local time where you're going, each stop, a page per day, bookings found in Gmail (Jules can read them and suggest itinerary entries), packing and "before you go" checklists. |
+| **Journal** | Exhaust | A page for each day, saved as you type, an optional mood, and your habits with streaks and six months of history. Today's habits also sit on Home. |
+| **Studio** | Body | **Boards**: an endless canvas for notes, links, pictures and tasks. **Ideas**: throw one in, warm it up, turn it into a project or a board; Jules can suggest next steps. **Moodboards**: pictures and colours, with a palette pulled from the pictures. |
+| **Notes** | Command module | Notes for every course on your flight path. Any line written `question :: answer`, or with a `{{gap}}`, becomes a flashcard. **Review** shows what's due; Space flips, 1–4 grades (spaced repetition, SM-2 style). Jules can suggest cards from a note. |
 | **Film** (`F`) | All of it | The cinematic scroll. Any part of the rocket takes you to its view. |
 
 ### Quick add
@@ -61,7 +65,7 @@ Jules understands:
 
 | Key | What it does |
 |---|---|
-| `1`–`7` | Switch view |
+| `1`–`9` | Open a book on the shelf, top to bottom |
 | `N` | New task |
 | `⌘K` or `/` | Search and commands |
 | `J` / `K` | Move through tasks |
@@ -74,10 +78,11 @@ Jules understands:
 
 ## Jules, the assistant
 
-Open it from the top-right button or with `⌘J` (`Ctrl+J` on Windows).
+Press `⌘J` (`Ctrl+J` on Windows), or the Jules mark at the top right, and one line opens at the bottom of the screen to type or talk into.
 
-- **Ask anything about your day.** "What's next?", "Plan tomorrow", "Anything I'm forgetting?" Jules sees your tasks, your calendar for the next week, the emails that need a reply, your countdowns and the flight path, and answers in a sentence or three.
-- **It asks before it changes anything.** When you ask for a change ("move the essay to Friday"), each change appears as a card with **Confirm** and **Skip**. Nothing is saved until you confirm.
+- **Ask anything about your day.** "What's next?", "Plan tomorrow", "Anything I'm forgetting?" Jules sees your tasks, your calendar for the next week, the emails that need a reply, your countdowns, the trip, your habits, open ideas, flashcards due and the flight path. It answers in subtitles, a sentence or two at a time.
+- **It asks before it changes anything.** When you ask for a change ("move the essay to Friday"), it appears as a draft: dashed, on the task itself if it's on screen, and in a small tray. ✓ does it, × drops it. Nothing is saved until you tap.
+- **Margin notes.** Small remarks beside things on each page: overdue tasks, a packing list behind schedule, emails that have waited, a streak worth keeping. These are worked out on your device, without asking Claude.
 - **Briefings.** Before 5 pm, Home offers a morning briefing; after 5 pm, an evening wrap-up. The morning one is prepared quietly when you first open Jules and only spoken when you press play.
 - **Heads-ups.** Ten minutes before a timed task or a calendar event, Jules gives you a nudge: a notification in the desktop app, a toast in the browser. After 8 pm it offers to move anything still open to tomorrow.
 - **Voice.** Replies can be read aloud (four voices, adjustable speed, in Settings). Where dictation is available you can talk back with the microphone button; it sends when you stop.
@@ -132,8 +137,13 @@ js/mail.js        Gmail inbox, plus Claude's needs-a-reply verdicts (read only)
 js/jules.js       the assistant: chat, proposals you confirm, briefings, heads-ups, voice
 js/spotify.js     what's playing, through the Spotify connector
 js/desktop.js     the installed app: icon, window, shortcut, menu bar, notifications
+js/trip.js        the Trip book
+js/journal.js     the Journal: daily pages and habits
+js/studio.js      the Studio: boards, ideas, moodboards
+js/notes.js       Notes and flashcards, with the review
+js/boot.js        starts the app once every book has registered
 js/ui.js          icons, notes Markdown, toasts, drag and drop, forms
-js/app.js         actions, the seven views, the task editor, palette, keyboard, router
+js/app.js         actions, the core books, the shelf and page turn, the task editor, palette, keyboard, router
 js/film.js        the cinematic scroll, now fed by live data
 data.example.js   example starter data (copy to data.js and make it yours)
 fonts/            Archivo + IBM Plex Mono, self-hosted (SIL Open Font License)
@@ -174,10 +184,10 @@ Open `js/parse.js` and add a word to the dates rule. For example, make `arvo` me
 1. ~~Look test~~ (v0.4)
 2. ~~Functional core: tasks, calendar, projects, flight path, log~~ (v0.5)
 3. ~~Cinematic Home, normal type, Mail~~ (v0.6)
-4. ~~Jules the assistant, voice, flight path planner, desktop app~~ ← v0.7
-5. Flight school: flashcards from your notes, with spaced repetition (FSRS)
+4. ~~Jules the assistant, voice, flight path planner, desktop app~~ (v0.7)
+5. ~~The bookshelf, ambient Jules, Trip, Journal, Studio, Notes and flashcards~~ ← v0.8
 6. Hangar: CV and certifications
-7. Widgets: a home screen you can rearrange
+7. FSRS scheduling for flashcards, and cards with pictures
 
 ## About the course data
 

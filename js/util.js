@@ -107,3 +107,17 @@
 
   if (typeof module !== "undefined") module.exports = J;
 })(typeof window !== "undefined" ? window : globalThis);
+
+/* A claude.ai capability (db, mcp, sample, tts…), or null outside claude.ai. Waits up to 2s for
+   the host to appear and 10s for the capability; the answer is remembered. */
+(function () {
+  const J = window.J, cache = {};
+  J.cap = name => cache[name] || (cache[name] = (async () => {
+    let framed = true; try { framed = window.top !== window.self; } catch (e) {}
+    const may = framed || /claude/i.test(location.hostname);
+    for (let i = 0; may && i < 20 && !(window.claude && window.claude.use); i++) await new Promise(r => setTimeout(r, 100));
+    const C = window.claude;
+    if (!(C && typeof C.use === "function")) return null;
+    try { return await Promise.race([C.use(name), new Promise(r => setTimeout(() => r(null), 10000))]); } catch (e) { return null; }
+  })());
+})();
