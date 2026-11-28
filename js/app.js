@@ -1672,34 +1672,10 @@
       } else if (was !== v) scrollTo(0, 0);
       if (toStar) setTimeout(() => { const el = $("#path-star"); if (el) el.scrollIntoView({ behavior: "smooth" }); }, 80);
     };
-    const animate = booted && was !== v && was !== "film";
     booted = true;
-    if (animate) J.turn(v, show); else show();
+    show();
   }
 
-  /* The page turn: the page you're on lifts from its right edge and turns over, onto the book you
-     picked. The old page is a copy laid over the new one, so the new one is already there underneath. */
-  let turnBusy = false;
-  J.turn = (to, fn) => {
-    const view = $("#view"), main = $(".main");
-    if (turnBusy || !view || !main || innerWidth <= 820 || matchMedia("(prefers-reduced-motion: reduce)").matches) { fn(); return; }
-    turnBusy = true;
-    const r = main.getBoundingClientRect(), vr = view.getBoundingClientRect();
-    const layer = document.createElement("div"); layer.className = "turn"; layer.setAttribute("aria-hidden", "true");
-    layer.style.left = Math.max(0, r.left) + "px"; layer.style.width = r.width + "px";
-    layer.style.setProperty("--c", J.bookColor(to));
-    const clone = view.cloneNode(true);
-    clone.removeAttribute("id"); clone.classList.add("view-copy");
-    clone.querySelectorAll("[id]").forEach(e => e.removeAttribute("id"));
-    clone.querySelectorAll("canvas").forEach(c => c.remove());
-    clone.style.cssText = `position:absolute;left:${vr.left - r.left}px;top:${vr.top}px;width:${vr.width}px;margin:0`;
-    layer.innerHTML = `<div class="turn-under"></div><div class="turn-leaf"><div class="turn-front"></div><div class="turn-back"><span>${esc(VIEWS_META[to].label)}</span></div></div>`;
-    $(".turn-front", layer).appendChild(clone);
-    document.body.appendChild(layer);
-    fn();
-    requestAnimationFrame(() => requestAnimationFrame(() => layer.classList.add("go")));
-    setTimeout(() => { layer.remove(); turnBusy = false; }, 900);
-  };
   /* The cut: a quick letterbox shutter between views, with the view's name in the gap. */
   let cutBusy = false;
   J.cut = (label, fn) => {
@@ -1769,15 +1745,34 @@
   }
   /* The books in the sidebar. A book can hide itself (Trip shows only near the trip). */
   function navOrder() { return ORDER.filter(v => !(EXT[v] && EXT[v].shown && !EXT[v].shown())); }
-  /* Each book's cloth, and how thick and long it sits on the shelf. */
-  const BOOK = { home: ["#26344d", 46, 100], tasks: ["#5e2a26", 40, 94], calendar: ["#2a4434", 42, 97], mail: ["#5b4a26", 36, 91], trip: ["#7a4a1f", 40, 95],
-    projects: ["#3a3152", 44, 98], path: ["#1f3c45", 42, 93], log: ["#3d3d3f", 38, 96], journal: ["#552a40", 40, 92], studio: ["#2b4b57", 44, 99], notes: ["#5a4527", 42, 95] };
-  const bookOf = v => BOOK[v] || ["#333a44", 40, 94];
+  /* Each book on the shelf: its colour, thickness (px), length (% of the shelf), how far it sits
+     in from the back (px), binding (cloth or leather) and how its title is put on:
+     gold foil, a pasted paper label, dark ink or cream ink. */
+  const BOOK = {
+    home:     ["#24324a", 46, 100, 2, "leather", "gold"],
+    tasks:    ["#5c2824", 40,  94, 6, "cloth",   "label"],
+    calendar: ["#29432f", 42,  97, 1, "cloth",   "gold"],
+    mail:     ["#6c5630", 35,  90, 8, "cloth",   "ink"],
+    projects: ["#3a2f52", 44,  98, 3, "leather", "gold"],
+    path:     ["#1d3b44", 41,  93, 5, "cloth",   "label"],
+    log:      ["#333335", 38,  96, 0, "leather", "gold"],
+    trip:     ["#80501f", 40,  95, 4, "leather", "gold"],
+    journal:  ["#52263c", 39,  92, 7, "leather", "gold"],
+    studio:   ["#2c4a57", 44,  99, 2, "cloth",   "cream"],
+    notes:    ["#5a4426", 42,  94, 5, "cloth",   "label"]
+  };
+  const bookOf = v => BOOK[v] || ["#333a44", 40, 94, 3, "cloth", "cream"];
   J.bookColor = v => bookOf(v)[0];
   function drawNav() {
     const list = navOrder();
     list.forEach((v, i) => { VIEWS_META[v].key = i < 9 ? String(i + 1) : ""; });
-    $("#sideNav").innerHTML = `<div class="shelf">${list.map(v => { const [c, h, w] = bookOf(v); return `<a href="#${v}" data-view="${v}" class="book" style="--c:${c};--h:${h}px;--w:${w}%"><span class="bk-cloth"><span class="bk-band" aria-hidden="true"></span><span class="nl">${VIEWS_META[v].label}</span><kbd>${VIEWS_META[v].key}</kbd></span><span class="bk-edge" aria-hidden="true"></span><span class="bk-leaf" aria-hidden="true"></span><span class="bk-ribbon" aria-hidden="true"></span></a>`; }).join("")}<span class="shelf-board" aria-hidden="true"></span></div>`;
+    $("#sideNav").innerHTML = `<div class="shelf"><div class="shelf-back" aria-hidden="true"></div>${list.map(v => {
+      const [c, h, w, o, m, t] = bookOf(v);
+      return `<a href="#${v}" data-view="${v}" class="book m-${m} t-${t}" style="--c:${c};--h:${h}px;--w:${w}%;--o:${o}px">` +
+        `<span class="bk-edge" aria-hidden="true"></span>` +
+        `<span class="bk-cover"><span class="bk-bands" aria-hidden="true"><i></i><i></i></span><span class="bk-title"><span class="nl">${VIEWS_META[v].label}</span></span><kbd>${VIEWS_META[v].key}</kbd></span>` +
+        `<span class="bk-ribbon" aria-hidden="true"></span></a>`;
+    }).join("")}<span class="shelf-board" aria-hidden="true"></span></div>`;
     $("#tabbar").innerHTML = list.map(v => `<a href="#${v}" data-view="${v}">${J.icon[v] || J.icon.home}<span>${VIEWS_META[v].short || VIEWS_META[v].label}</span></a>`).join("");
     $$(".nav a[data-view]").forEach(a => a.classList.toggle("on", a.dataset.view === UI.view));
   }

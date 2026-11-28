@@ -109,7 +109,7 @@
     }
     const card = S.get("cards", c) || {};
     const opts = [1, 2, 3, 4].map(g => [g, ["Again", "Hard", "Good", "Easy"][g - 1], gapLabel(next(card, g).ivl)]);
-    return `<div class="rv">
+    return `<div class="review">
       <header class="rv-top"><button type="button" class="link" data-act="ntEndReview">${J.icon.left} Stop</button><span>${esc(card.course || "")}</span><span class="tc">${R.seen + 1} · ${R.queue.length} left</span></header>
       <div class="rv-card${R.show ? " flip" : ""}"><div class="rv-face rv-front"><p>${clozeFront(card)}</p></div><div class="rv-face rv-back"><p class="rv-q">${clozeFront(card)}</p><p class="rv-a">${clozeBack(card)}</p></div></div>
       <footer class="rv-act">${R.show ? opts.map(([g, l, gap]) => `<button type="button" class="rv-g g${g}" data-act="ntGrade" data-g="${g}"><b>${l}</b><span>${esc(gap)}</span><kbd>${g}</kbd></button>`).join("") : `<button type="button" class="btn primary rv-show" data-act="ntShow">Show answer <kbd>Space</kbd></button>`}</footer></div>`;

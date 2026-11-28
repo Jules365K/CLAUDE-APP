@@ -10,11 +10,11 @@ A personal mission control built around one idea: **your life as a rocket.**
 
 Jules comes in three parts:
 
-- **The app** is a shelf of books, one per part of your life. Hover a book on the shelf and it slides out; click it and the page turns into it.
+- **The app** is a shelf of books, one per part of your life: cloth and leather bindings, gold-foil titles and pasted paper labels, stacked in a wooden cubby. Hover a book and it slides out to show its pages; click it to open it.
 - **The film** is the cinematic scroll you launch from the sidebar. It is fed by the same live data.
 - **Jules the assistant** isn't a chat window. It speaks in subtitles at the bottom of the screen, writes small notes in the margins of each page, and puts the changes it suggests on the thing itself, as drafts you confirm with one tap.
 
-Status: **v0.8**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
+Status: **v0.9**. Plain HTML, CSS and JavaScript, with no build step, so you can read every line.
 
 ## What it does
 
@@ -142,6 +142,8 @@ js/journal.js     the Journal: daily pages and habits
 js/studio.js      the Studio: boards, ideas, moodboards
 js/notes.js       Notes and flashcards, with the review
 js/boot.js        starts the app once every book has registered
+tex/              book cloth, leather, paper and wood textures (drawn by tools/make_textures.py)
+tools/            make_textures.py: draws the textures from noise, so no photos are involved
 js/ui.js          icons, notes Markdown, toasts, drag and drop, forms
 js/app.js         actions, the core books, the shelf and page turn, the task editor, palette, keyboard, router
 js/film.js        the cinematic scroll, now fed by live data
@@ -169,7 +171,7 @@ Start with **`js/app.js`**. It's numbered:
    - `timelineCol()` lays out a day. Overlapping blocks share the width; see `layoutCols()`.
 4. **Views:** `V.home`, `V.tasks`, `V.calendar`, `V.mail`, `V.projects`, `V.path`, `V.log`. Each one returns HTML. Home's scroll effects (reveal once, drifting photos, the lit rocket) are in `homeAfter()`.
 5. **Editors:** the task drawer (`TD`), forms, settings, the command palette (`PAL`) and the keyboard.
-6. **Router:** `route()` reads the address after the `#` and shows that view, or the film, with a short letterbox cut in between (`J.cut`). `render()` redraws the view whenever data changes.
+6. **Router:** `route()` reads the address after the `#` and shows that book (or the film). `render()` redraws the view whenever data changes. Books added in their own files (Trip, Journal, Studio, Notes) join through `J.app.register`, and `boot.js` starts everything once they have.
 
 **`js/store.js`** is worth reading next. Every save goes through `S.put()`, which updates the screen straight away and then writes in the background, one write at a time for each record.
 
@@ -185,9 +187,10 @@ Open `js/parse.js` and add a word to the dates rule. For example, make `arvo` me
 2. ~~Functional core: tasks, calendar, projects, flight path, log~~ (v0.5)
 3. ~~Cinematic Home, normal type, Mail~~ (v0.6)
 4. ~~Jules the assistant, voice, flight path planner, desktop app~~ (v0.7)
-5. ~~The bookshelf, ambient Jules, Trip, Journal, Studio, Notes and flashcards~~ ← v0.8
-6. Hangar: CV and certifications
-7. FSRS scheduling for flashcards, and cards with pictures
+5. ~~The bookshelf, ambient Jules, Trip, Journal, Studio, Notes and flashcards~~ (v0.8)
+6. ~~Real textures for the books; no page turn~~ ← v0.9
+7. Hangar: CV and certifications
+8. FSRS scheduling for flashcards, and cards with pictures
 
 ## About the course data
 
